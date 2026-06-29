@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { MqttProvider } from '@/components/MqttProvider';
+import { AppShell } from '@/components/AppShell';
 
 export const metadata: Metadata = {
   title: 'NEXUS OS • Boiler Intelligence',
@@ -9,7 +11,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <MqttProvider>
+          <AppShell>{children}</AppShell>
+        </MqttProvider>
+      </body>
     </html>
   );
 }

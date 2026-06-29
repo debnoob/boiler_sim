@@ -19,7 +19,11 @@
       "Bash(python -c \"import engine.rag_server\")",
       "Bash(echo \"exit: $?\")",
       "Bash(echo \"Exit: $?\")",
-      "Bash(grep -v -E \"\\\\.\\(png|jpg|ico|svg|woff|ttf\\)$\")"
+      "Bash(grep -v -E \"\\\\.\\(png|jpg|ico|svg|woff|ttf\\)$\")",
+      "WebFetch(domain:app.oxmaint.ai)",
+      "Bash(npx tsc *)",
+      "Bash(kill %1)",
+      "Bash(curl -s http://localhost:3000)"
     ]
   }
 }

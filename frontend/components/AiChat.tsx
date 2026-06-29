@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNexusStore } from '@/lib/store';
+import { usePublish } from '@/lib/publishContext';
 import { formatRich, preprocessMessage } from '@/lib/utils';
 import type { ChatMessage, DiagnosisPayload, AiResponsePayload } from '@/types/telemetry';
 
@@ -17,14 +18,11 @@ const SEVERITY_BADGE: Record<string, string> = {
   medium: '#eab308', low: '#3b82f6', normal: '#22c55e',
 };
 
-interface AiChatProps {
-  publish: (topic: string, payload: object) => void;
-}
-
 type UploadState = 'idle' | 'uploading' | 'done' | 'error';
 interface KbDoc { filename: string; doc_id: string; chunks_stored?: number; }
 
-export function AiChat({ publish }: AiChatProps) {
+export function AiChat() {
+  const publish = usePublish();
   const { chatMessages, aiStatus, addChatMessage, removeChatMessage, woCount } = useNexusStore();
   const [input, setInput] = useState('');
   const [thinkingPhase, setThinkingPhase] = useState(0);
@@ -156,7 +154,7 @@ export function AiChat({ publish }: AiChatProps) {
   };
 
   const sendShiftReport = () => {
-    addChatMessage({ id: `user-${Date.now()}`, type: 'user', content: '📋 Generate the end-of-shift report', timestamp: new Date().toLocaleTimeString() });
+    addChatMessage({ id: `user-${Date.now()}`, type: 'user', content: 'Generate the end-of-shift report', timestamp: new Date().toLocaleTimeString() });
     publish('factory/pumphouse4/boiler/unit01/ai/question', { type: 'shift_report', timestamp: new Date().toISOString() });
     addChatMessage({ id: 'thinking', type: 'thinking', content: '', timestamp: '' });
   };
@@ -187,7 +185,7 @@ export function AiChat({ publish }: AiChatProps) {
               <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--tx-primary)', letterSpacing: '-0.02em' }}>Nexus AI</div>
               <div className="ai-model-pill" style={{ marginTop: 3 }}>
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
-                <span>llama-3.2-3b-instruct</span>
+                <span>Local Ollama analyst</span>
               </div>
             </div>
           </div>
@@ -239,7 +237,7 @@ export function AiChat({ publish }: AiChatProps) {
             <div style={{ padding: '0 14px 8px' }}>
               {kbDocs.length === 0 ? (
                 <p style={{ fontSize: 11, color: 'var(--tx-muted)', fontStyle: 'italic', margin: '2px 0 0' }}>
-                  No manuals loaded — upload a PDF via 📎 to ground answers in your documentation.
+                  No manuals loaded — upload a PDF to ground answers in your documentation.
                 </p>
               ) : kbDocs.map(doc => (
                 <div key={doc.doc_id} style={{
@@ -275,22 +273,22 @@ export function AiChat({ publish }: AiChatProps) {
           )}
           <div ref={chipsRef} className="flex gap-2 overflow-x-auto hide-scrollbar" onScroll={updateChipsScroll}>
             {[
-              ['⚡ Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
-              ['📉 Efficiency', 'Why is efficiency trending the way it is? Explain using current sensor values.'],
-              ['🔮 Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
-              ['🧪 What-if: drum', 'What if drum level drops to 180mm?'],
-              ['🧰 Priorities', 'What should the maintenance team prioritize this week, in order?'],
+              ['Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
+              ['Efficiency', 'Why is efficiency trending the way it is? Explain using current sensor values.'],
+              ['Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
+              ['What-if: drum', 'What if drum level drops to 180mm?'],
+              ['Maintenance priorities', 'What should the maintenance team prioritize this week, in order?'],
             ].map(([label, q]) => (
               <button key={label} className="ai-chip" onClick={() => sendQuick(q)}>{label}</button>
             ))}
-            <button className="ai-chip" onClick={sendShiftReport}>📋 Shift report</button>
+            <button className="ai-chip" onClick={sendShiftReport}>Shift report</button>
           </div>
         </div>
 
         {/* Input */}
         <div style={{ padding: '8px 14px 12px', background: 'var(--ai-msg-bg)' }}>
           <div className="ai-input-wrap">
-            <span style={{ fontSize: 12, color: 'var(--tx-muted)', flexShrink: 0 }}>💬</span>
+            <span style={{ fontSize: 12, color: 'var(--tx-muted)', flexShrink: 0 }}>AI</span>
             <input
               type="text"
               placeholder="Ask about the plant…"
@@ -327,9 +325,9 @@ export function AiChat({ publish }: AiChatProps) {
                 transition: 'all 0.2s',
               }}
             >
-              {uploadState === 'uploading' ? '⟳' : uploadState === 'done' ? '✓' : uploadState === 'error' ? '✗' : '📎'}
+              {uploadState === 'uploading' ? '...' : uploadState === 'done' ? 'OK' : uploadState === 'error' ? '!' : '+'}
             </button>
-            <button className="ai-send-btn" onClick={sendMessage}>✈</button>
+            <button className="ai-send-btn" onClick={sendMessage}>Send</button>
           </div>
           {/* Upload status label */}
           {uploadLabel && (
@@ -340,9 +338,9 @@ export function AiChat({ publish }: AiChatProps) {
               color: uploadState === 'error' ? '#ef4444' : uploadState === 'done' ? '#4ade80' : '#fbbf24',
               transition: 'all 0.3s',
             }}>
-              {uploadState === 'uploading' && '⟳ Ingesting '}
-              {uploadState === 'done' && '✓ Stored '}
-              {uploadState === 'error' && '✗ '}
+              {uploadState === 'uploading' && 'Ingesting '}
+              {uploadState === 'done' && 'Stored '}
+              {uploadState === 'error' && 'Error '}
               {uploadLabel}
             </p>
           )}
@@ -562,7 +560,7 @@ function ShiftReportCard({ data, ts }: { data: AiResponsePayload; ts: string }) 
     <div style={{ background: 'var(--bg-ai)', borderRadius: '12px 12px 12px 4px', overflow: 'hidden', border: '1px solid var(--ai-bubble-bd)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--ai-bubble-bd)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#fbbf24', fontSize: 13 }}>📋</span>
+          <span style={{ color: '#fbbf24', fontSize: 13 }}>RPT</span>
           <span style={{ fontWeight: 700, color: 'var(--accent-text)', fontSize: 13 }}>End-of-Shift Report</span>
         </div>
         <span style={{ background: sColor, color: '#09090b', fontSize: 9, padding: '2px 9px', borderRadius: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{status}</span>
@@ -614,7 +612,7 @@ function WhatIfCard({ data, ts }: { data: AiResponsePayload; ts: string }) {
     <div style={{ background: 'var(--bg-ai)', borderRadius: '12px 12px 12px 4px', overflow: 'hidden', border: '1px solid var(--ai-bubble-bd)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--ai-bubble-bd)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#fbbf24', fontSize: 13 }}>🧪</span>
+          <span style={{ color: '#fbbf24', fontSize: 13 }}>SIM</span>
           <span style={{ fontWeight: 700, color: 'var(--accent-text)', fontSize: 13 }}>What-If Simulation</span>
         </div>
         <span style={{ background: rc, color: '#09090b', fontSize: 9, padding: '2px 9px', borderRadius: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{risk} risk</span>
