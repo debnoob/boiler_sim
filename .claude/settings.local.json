@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(command -v node)",
+      "Bash(python3 -)",
+      "Bash(node --check /tmp/nexus_check.js)",
+      "Bash(python -m py_compile engine/ai_analyst.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 *)",
+      "Bash(npx create-next-app@latest *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3001/)",
+      "Bash(curl -s http://localhost:3001/)",
+      "Bash(pkill -f \"next dev\")",
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(python -c \"import engine.rag_server\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(grep -v -E \"\\\\.\\(png|jpg|ico|svg|woff|ttf\\)$\")"
+    ]
+  }
+}

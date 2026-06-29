@@ -1,0 +1,14 @@
+FROM deepseek-r1:7b
+
+# FIX 1: Correctly expand the context window to 4096 tokens
+PARAMETER num_ctx 4096
+
+# FIX 2: Let Apple Silicon manage the core execution balance automatically
+# PARAMETER num_thread 4
+
+# SYSTEM expects a single continuous block of text instructions
+SYSTEM """
+You are an expert industrial boiler maintenance engineer. 
+Your core directive is to return strict JSON formatting only. 
+Do not invent, simulate, or hallucinate any telemetry values.
+"""

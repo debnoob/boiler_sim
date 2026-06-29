@@ -1,0 +1,2056 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>NEXUS OS • Boiler Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.6.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        /* ============================================================
+           DESIGN TOKENS — dark (default) + light overrides
+           ============================================================ */
+        :root {
+            --accent:        #a16207;
+            --accent-hover:  #ca8a04;
+            --accent-muted:  #1c1400;
+            --accent-border: #3d2d00;
+            --accent-text:   #fef3c7;
+
+            /* Surface stack */
+            --bg-base:       #09090b;
+            --bg-surface:    #18181b;
+            --bg-elevated:   #27272a;
+            --bg-deep:       #0a0800;
+            --bg-ai:         #0e0c06;
+
+            /* Text */
+            --tx-primary:    #fafafa;
+            --tx-secondary:  #a1a1aa;
+            --tx-muted:      #57534e;
+            --tx-label:      #c4c4cc;
+            --tx-value:      #e2e8f0;
+
+            /* Borders */
+            --bd-card:       #27272a;
+            --bd-inner:      #3f3f46;
+            --bd-stream:     #1c1400;
+
+            /* AI widget */
+            --ai-shell-from: #3d2d00;
+            --ai-shell-mid:  #a16207;
+            --ai-shell-peak: #fde68a;
+            --ai-header-bg:  #0a0800;
+            --ai-msg-bg:     #09090b;
+            --ai-bubble-bg:  #130f00;
+            --ai-bubble-bd:  #3d2d00;
+            --ai-chip-bg:    #130f00;
+            --ai-chip-bd:    #4a3200;
+            --ai-chip-tx:    #d6c089;
+            --ai-input-bg:   #130f00;
+            --ai-input-bd:   #4a3200;
+            --ai-think-bg:   #1a1200;
+            --ai-user-bg:    #1c1400;
+            --ai-user-bd:    #a16207;
+            --ai-footer-tx:  #3d3d3d;
+
+            /* Tags card */
+            --tags-bg-grad:  rgba(161,98,7,0.14);
+            --tags-bg-base:  #18181b;
+            --tags-bd:       #3d2d00;
+
+            /* Glow */
+            --glow-metric:   0 0 10px rgba(255,255,255,0.8), 0 0 20px rgba(255,255,255,0.4);
+
+            /* Pattern-detected callout (chat cards) */
+            --pattern-bg:    #150b2e;
+            --pattern-bd:    #6d28d9;
+            --pattern-tx:    #ddd6fe;
+            --pattern-icon:  #a78bfa;
+            --pattern-label: #c4b5fd;
+        }
+
+        /* ---- LIGHT MODE ---- */
+        body.light {
+            --bg-base:       #faf7f3;
+            --bg-surface:    #ffffff;
+            --bg-elevated:   #f5ede3;
+            --bg-deep:       #fdf9f5;
+            --bg-ai:         #fffbf6;
+
+            --tx-primary:    #1c1410;
+            --tx-secondary:  #6b5f55;
+            --tx-muted:      #9c8878;
+            --tx-label:      #5a4f47;
+            --tx-value:      #1c1410;
+
+            --bd-card:       #e8ddd4;
+            --bd-inner:      #ddd0c4;
+            --bd-stream:     #f0e6d8;
+
+            --ai-shell-from: #d4a76a;
+            --ai-shell-mid:  #b97c2a;
+            --ai-shell-peak: #f5c96b;
+            --ai-header-bg:  #fffbf5;
+            --ai-msg-bg:     #fdf8f2;
+            --ai-bubble-bg:  #fff8ee;
+            --ai-bubble-bd:  #f0d9b0;
+            --ai-chip-bg:    #fff3dd;
+            --ai-chip-bd:    #e8c87a;
+            --ai-chip-tx:    #7c4f0a;
+            --ai-input-bg:   #fff8ee;
+            --ai-input-bd:   #e8c87a;
+            --ai-think-bg:   #fff3dd;
+            --ai-user-bg:    #fef3e2;
+            --ai-user-bd:    #d4913a;
+            --ai-footer-tx:  #b09070;
+
+            --tags-bg-grad:  rgba(161,98,7,0.07);
+            --tags-bg-base:  #ffffff;
+            --tags-bd:       #e8c87a;
+
+            --accent-muted:  #fdf0dc;
+            --accent-border: #e8c87a;
+            --accent-text:   #7c4f0a;
+
+            --glow-metric:   0 0 8px rgba(161,98,7,0.35), 0 0 2px rgba(161,98,7,0.2);
+
+            --pattern-bg:    #f3ecff;
+            --pattern-bd:    #c4b5fd;
+            --pattern-tx:    #4c1d95;
+            --pattern-icon:  #7c3aed;
+            --pattern-label: #5b21b6;
+        }
+
+        body {
+            background: var(--bg-base);
+            color: var(--tx-primary);
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+
+        #stream {
+            font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+        }
+
+        .card {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--bd-card);
+            border-radius: 0.75rem;
+            transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+            box-shadow: 0 20px 25px -5px rgba(0,0,0,0.18), 0 8px 10px -6px rgba(0,0,0,0.1);
+        }
+        body.light .card {
+            box-shadow: 0 4px 20px rgba(161,98,7,0.08), 0 1px 4px rgba(0,0,0,0.06);
+        }
+
+        .card-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--bd-card);
+            background: var(--bg-surface);
+            border-top-left-radius: 0.75rem;
+            border-top-right-radius: 0.75rem;
+        }
+
+        .card-content {
+            padding: 1.5rem;
+            background: var(--bg-surface);
+            border-bottom-left-radius: 0.75rem;
+            border-bottom-right-radius: 0.75rem;
+        }
+
+        .inner-card {
+            background-color: var(--bg-elevated);
+            border: 1px solid var(--bd-inner);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 4px 8px rgba(0,0,0,0.15);
+            color: var(--tx-primary);
+            transition: background 0.3s ease, border-color 0.3s ease;
+        }
+        body.light .inner-card {
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 2px 6px rgba(161,98,7,0.06);
+        }
+        .inner-card .text-zinc-500 { color: var(--tx-secondary) !important; }
+        .inner-card .text-zinc-400 { color: var(--tx-label) !important; }
+
+        #val-pressure, #val-level, #val-o2, #risk-number,
+        .tag-value.digit {
+            color: var(--tx-primary) !important;
+            text-shadow: var(--glow-metric) !important;
+        }
+
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-thumb { background: var(--bd-card); border-radius: 99px; }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .slide-in { animation: slideIn 0.3s ease forwards; }
+
+        .risk-bar { transition: width 0.8s cubic-bezier(0.4,0,0.2,1); }
+
+        .pulse-dot { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+        @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:.5; } }
+
+        .digit { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* ============================================================
+           THEME TOGGLE BUTTON
+           ============================================================ */
+        #theme-toggle {
+            width: 38px; height: 22px;
+            border-radius: 999px;
+            border: 1.5px solid var(--bd-card);
+            background: var(--bg-elevated);
+            cursor: pointer;
+            position: relative;
+            transition: background 0.25s, border-color 0.25s;
+            flex-shrink: 0;
+        }
+        #theme-toggle::after {
+            content: '';
+            position: absolute;
+            top: 2px; left: 2px;
+            width: 14px; height: 14px;
+            border-radius: 50%;
+            background: var(--accent);
+            transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+        }
+        body.light #theme-toggle::after { transform: translateX(16px); }
+
+        /* ============================================================
+           AI WIDGET — animated spotlight shell
+           ============================================================ */
+        @property --border-angle {
+            syntax: '<angle>';
+            initial-value: 0deg;
+            inherits: false;
+        }
+        @keyframes border-spin { to { --border-angle: 360deg; } }
+        @keyframes ai-breathe {
+            0%,100% { box-shadow: 0 0 28px rgba(161,98,7,0.22), 0 0 6px rgba(251,191,36,0.10), 0 20px 40px rgba(0,0,0,0.4); }
+            50%     { box-shadow: 0 0 48px rgba(161,98,7,0.42), 0 0 14px rgba(251,191,36,0.22), 0 20px 40px rgba(0,0,0,0.4); }
+        }
+        body.light @keyframes ai-breathe {
+            0%,100% { box-shadow: 0 0 20px rgba(161,98,7,0.18), 0 4px 20px rgba(161,98,7,0.10); }
+            50%     { box-shadow: 0 0 36px rgba(161,98,7,0.32), 0 4px 24px rgba(161,98,7,0.16); }
+        }
+
+        #ai-chat-shell {
+            position: relative;
+            border-radius: 18px;
+            padding: 1.5px;
+            background: conic-gradient(from var(--border-angle, 0deg),
+                var(--ai-shell-from) 0%, var(--ai-shell-mid) 18%,
+                var(--ai-shell-peak) 28%, var(--ai-shell-mid) 38%,
+                var(--ai-shell-from) 55%, var(--ai-shell-from) 100%);
+            animation: border-spin 7s linear infinite, ai-breathe 4.5s ease-in-out infinite;
+        }
+
+        /* Widget inner card */
+        #ai-chat-card {
+            border-radius: 16.5px;
+            overflow: hidden;
+            background: var(--ai-msg-bg) !important;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Widget header */
+        .ai-widget-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px 12px;
+            background: var(--ai-header-bg);
+            border-bottom: 1px solid var(--ai-bubble-bd);
+        }
+
+        /* Model pill */
+        .ai-model-pill {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 9px;
+            border-radius: 999px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            background: var(--ai-chip-bg);
+            border: 1px solid var(--ai-chip-bd);
+            color: var(--ai-chip-tx);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Status badge */
+        #ai-online-badge {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        /* Shimmer line */
+        .ai-shimmer-line {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent) 30%, #fbbf24 50%, var(--accent) 70%, transparent);
+            background-size: 200% 100%;
+            animation: shimmer-slide 3.5s linear infinite;
+        }
+        @keyframes shimmer-slide {
+            from { background-position: 200% 0; }
+            to   { background-position: -200% 0; }
+        }
+
+        /* Widget info bar */
+        .ai-info-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 7px 18px;
+            background: var(--ai-header-bg);
+            border-bottom: 1px solid var(--ai-bubble-bd);
+            font-size: 10px;
+            color: var(--tx-muted);
+        }
+        .ai-info-bar span { display: flex; align-items: center; gap: 4px; }
+
+        /* Messages area */
+        #ai-chat-messages {
+            padding: 16px;
+            space-y: 12px;
+            overflow-y: auto;
+            flex: 1;
+            background: var(--ai-msg-bg);
+        }
+
+        /* AI bubble */
+        .ai-bubble {
+            background: var(--ai-bubble-bg);
+            border: 1px solid var(--ai-bubble-bd);
+            border-radius: 0 12px 12px 12px;
+            padding: 11px 14px;
+            max-width: 90%;
+            font-size: 12.5px;
+            line-height: 1.65;
+            color: var(--tx-primary);
+        }
+        .ai-bubble .bubble-time {
+            font-size: 10px;
+            color: var(--tx-muted);
+            margin-top: 6px;
+        }
+
+        /* User bubble */
+        .user-bubble {
+            background: var(--ai-user-bg);
+            border: 1px solid var(--ai-user-bd);
+            border-radius: 12px 0 12px 12px;
+            padding: 9px 14px;
+            max-width: 78%;
+            font-size: 12.5px;
+            font-weight: 500;
+            line-height: 1.5;
+            color: var(--tx-primary);
+        }
+
+        /* AI avatar */
+        .ai-avatar {
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            background: var(--ai-chip-bg);
+            border: 1.5px solid var(--accent);
+            color: #fbbf24;
+            margin-top: 2px;
+        }
+
+        /* Quick chips */
+        .ai-chip {
+            flex-shrink: 0;
+            cursor: pointer;
+            user-select: none;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--ai-chip-tx);
+            background: var(--ai-chip-bg);
+            border: 1px solid var(--ai-chip-bd);
+            border-radius: 999px;
+            padding: 5px 12px;
+            white-space: nowrap;
+            transition: all 0.15s ease;
+        }
+        .ai-chip:hover {
+            background: var(--ai-bubble-bg);
+            border-color: var(--accent);
+            color: #fde68a;
+            transform: translateY(-1px);
+        }
+        body.light .ai-chip:hover { color: #7c4f0a; }
+
+        /* Typewriter cursor */
+        .type-cursor::after {
+            content: '▋';
+            color: #fbbf24;
+            margin-left: 1px;
+            animation: pulse 1s infinite;
+        }
+
+        /* Sensor value highlights */
+        .sensor-val { color: #fbbf24; font-weight: 600; }
+        body.light .sensor-val { color: #92400e; }
+
+        /* Bold text in chat bubbles */
+        .ai-bubble strong { color: #fde68a; }
+        body.light .ai-bubble strong { color: #92400e; }
+
+        /* Input area */
+        .ai-input-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 12px;
+            background: var(--ai-input-bg);
+            border: 1.5px solid var(--ai-input-bd);
+            transition: border-color 0.15s;
+        }
+        .ai-input-wrap:focus-within {
+            border-color: var(--accent);
+        }
+        .ai-input-wrap input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-size: 13px;
+            color: var(--tx-primary);
+            font-family: inherit;
+        }
+        .ai-input-wrap input::placeholder { color: var(--tx-muted); }
+
+        .ai-send-btn {
+            width: 30px; height: 30px;
+            border-radius: 8px;
+            background: var(--accent);
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #09090b;
+            font-size: 13px;
+            flex-shrink: 0;
+            transition: background 0.15s, transform 0.1s;
+        }
+        .ai-send-btn:hover { background: var(--accent-hover); transform: scale(1.05); }
+        .ai-send-btn:active { transform: scale(0.95); }
+
+        /* Chips scroll zone */
+        .chips-zone {
+            position: relative;
+            padding: 8px 14px 6px;
+            background: var(--ai-msg-bg);
+            border-top: 1px solid var(--ai-bubble-bd);
+        }
+
+        /* Input footer zone */
+        .ai-input-zone {
+            padding: 8px 14px 12px;
+            background: var(--ai-msg-bg);
+        }
+        .ai-powered-line {
+            text-align: center;
+            margin-top: 6px;
+            font-size: 10px;
+            color: var(--ai-footer-tx);
+        }
+
+        /* Live Tags card */
+        #live-tags-card {
+            background: radial-gradient(ellipse at top right, var(--tags-bg-grad) 0%, var(--tags-bg-base) 60%);
+            border: 1px solid var(--tags-bd) !important;
+            box-shadow: 0 0 20px rgba(161,98,7,0.08), 0 8px 24px rgba(0,0,0,0.12);
+        }
+        body.light #live-tags-card {
+            box-shadow: 0 4px 16px rgba(161,98,7,0.1), 0 1px 4px rgba(0,0,0,0.05);
+        }
+
+        .tag-row {
+            transition: background 0.15s ease, border-color 0.15s ease;
+            border-radius: 6px;
+            padding-left: 6px; padding-right: 6px;
+            margin-left: -6px; margin-right: -6px;
+            cursor: default;
+        }
+        .tag-row:hover { background: rgba(161,98,7,0.1); border-bottom-color: rgba(161,98,7,0.35) !important; }
+        .tag-row:hover .tag-label { color: #fbbf24 !important; }
+        .tag-row:hover .tag-value { color: var(--accent-text) !important; }
+        body.light .tag-row:hover .tag-label { color: #a16207 !important; }
+        body.light .tag-row:hover .tag-value { color: #7c4f0a !important; }
+
+        /* Light mode text overrides for Tailwind classes */
+        body.light .text-zinc-100 { color: var(--tx-primary) !important; }
+        body.light .text-zinc-400 { color: var(--tx-secondary) !important; }
+        body.light .text-zinc-500 { color: var(--tx-muted) !important; }
+        body.light .border-zinc-700,
+        body.light .border-zinc-800,
+        body.light [class*="border-zinc-8"],
+        body.light [class*="border-zinc-7"],
+        body.light .tag-row { border-color: var(--bd-inner) !important; }
+        body.light .bg-zinc-800 { background: var(--bg-elevated) !important; }
+        body.light .bg-zinc-900 { background: var(--bg-surface) !important; }
+        body.light #stream { color: var(--tx-secondary) !important; }
+        body.light .text-slate-600 { color: var(--tx-muted) !important; }
+        body.light h2.text-zinc-100,
+        body.light h1 { color: var(--tx-primary) !important; }
+
+        /* tag-label and tag-value use CSS variable already, but hardcoded #c4c4cc is dark-mode only */
+        body.light .tag-label { color: var(--tx-label) !important; }
+
+        /* sensor-val in light mode → dark amber instead of bright yellow */
+        body.light .sensor-val { color: #92400e; }
+
+        /* bold highlights inside typed chat answers — dark amber in light mode */
+        body.light .ai-bubble strong { color: #92400e; }
+
+        /* chip scroll arrows are bright yellow — darken in light mode */
+        body.light #chips-left-btn,
+        body.light #chips-right-btn { color: #92400e !important; border-color: var(--accent) !important; }
+
+        /* mode-display in light mode */
+        body.light #mode-display { color: #a16207 !important; }
+
+        /* ai-avatar icon tint in light mode */
+        body.light .ai-avatar { color: #a16207; }
+
+        /* ai-send-btn icon: dark bg is fine in both modes */
+        body.light .ai-chip:focus { color: var(--ai-chip-tx); }
+
+        /* "Nexus AI" bold in welcome bubble — visible in light */
+        body.light .ai-bubble strong[style*="#fbbf24"] { color: #92400e !important; }
+
+        /* what-if step number circle — dark bg OK since it uses var now */
+
+        /* Risk bar bg */
+        body.light #risk-bar-track { background: var(--bg-elevated) !important; }
+    </style>
+</head>
+
+<body class="min-h-screen text-zinc-100 antialiased selection:bg-zinc-800">
+    <div class="max-w-[1600px] mx-auto p-6">
+
+        <!-- HEADER -->
+        <div class="flex justify-between items-center mb-8">
+            <div class="flex items-center gap-4">
+                <div class="w-12 h-12 flex items-center justify-center text-lg font-black rounded-xl flex-shrink-0"
+                    style="background:#a16207; color:#09090b; letter-spacing:-1px;">Nx</div>
+                <div>
+                    <h1 class="text-2xl font-extrabold tracking-tight" style="color:var(--accent-text); letter-spacing:-0.03em;">NEXUS OS</h1>
+                    <div class="flex items-center gap-3 mt-1.5">
+                        <span id="mqtt-status" class="text-red-500 flex items-center gap-1.5 text-xs font-medium">
+                            <span class="relative flex h-2 w-2">
+                                <span class="absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75 pulse-dot"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                            </span>
+                            Connecting...
+                        </span>
+                        <span class="text-zinc-500 text-xs font-medium">BOILER-01 · <span id="current-time"></span></span>
+                        <span class="text-zinc-500 text-xs font-medium">Mode: <span id="mode-display" class="font-semibold" style="color:var(--accent);">NORMAL</span></span>
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <button class="px-4 py-2 text-sm font-bold rounded-md transition-colors" style="background:#a16207; color:#09090b;">Dashboard</button>
+                <button class="px-4 py-2 border text-sm font-medium rounded-md transition-colors" style="border-color:var(--bd-card);color:var(--tx-secondary);background:transparent;" onmouseover="this.style.background='var(--bg-elevated)'" onmouseout="this.style.background='transparent'">Settings</button>
+                <!-- Theme toggle -->
+                <div class="flex items-center gap-2 ml-1" title="Toggle light / dark">
+                    <i class="fa-solid fa-moon text-zinc-500" style="font-size:12px;" id="theme-icon-dark"></i>
+                    <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
+                    <i class="fa-solid fa-sun text-zinc-500" style="font-size:12px;" id="theme-icon-light"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- INTELLIGENCE STREAM -->
+        <div class="card mb-6" style="border-color:var(--bd-stream); background:var(--bg-deep);">
+            <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color:var(--bd-stream); background:var(--bg-base);">
+                <span style="color:#a16207; font-size:13px;">⬡</span>
+                <span class="text-xs font-semibold uppercase tracking-widest" style="color:var(--tx-muted);">MQTT Intelligence Stream</span>
+                <span class="ml-auto text-[10px]" style="color:var(--tx-muted);">Messages: <span id="msg-count" class="font-semibold digit" style="color:var(--tx-secondary);">0</span></span>
+            </div>
+            <div id="stream" class="px-4 py-3 h-20 overflow-y-auto text-xs space-y-1" style="color:var(--tx-secondary); font-family:'JetBrains Mono','Fira Code',monospace;">
+                <div>Waiting for MQTT broker connection...</div>
+            </div>
+        </div>
+
+        <!-- MAIN GRID -->
+        <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+
+            <!-- LEFT 2/3 -->
+            <div class="col-span-1 xl:col-span-2 space-y-6">
+
+                <!-- PREDICTIVE INTELLIGENCE -->
+                <div id="predict-card" class="card">
+                    <div class="card-header flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--bg-elevated);border:1px solid var(--bd-inner);color:var(--tx-secondary);">
+                                <i class="fa-solid fa-chart-line text-lg"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-lg font-bold text-zinc-100">Predictive Intelligence</h2>
+                                <p class="text-zinc-400 text-xs font-medium">IoT Sensor Fusion • Physics-Based ML</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-[10px] font-medium uppercase tracking-wider" style="color:var(--tx-secondary);">Failure Risk</div>
+                            <div id="risk-number" class="text-3xl font-bold digit" style="color:var(--tx-primary);">0%</div>
+                        </div>
+                    </div>
+
+
+                    <div class="card-content">
+                        <!-- Risk Bar -->
+                        <div class="mb-6">
+                            <div class="flex justify-between text-[11px] mb-2" style="color:var(--tx-label);">
+                                <span>Boiler #1 — Overall Health</span>
+                                <span id="risk-status" class="text-emerald-500 font-medium">Normal</span>
+                            </div>
+                            <div class="h-2 rounded-full overflow-hidden" style="background:var(--bg-elevated);">
+                                <div id="risk-bar" class="risk-bar h-full bg-emerald-500 rounded-full"
+                                    style="width: 5%"></div>
+                            </div>
+                        </div>
+
+                        <!-- AI Forecast + Combustion Advisor -->
+                        <div class="grid grid-cols-2 gap-3 mb-4">
+                            <!-- Degradation Rate Forecaster -->
+                            <div class="inner-card" id="forecast-card">
+                                <div class="flex justify-between items-center mb-1.5">
+                                    <span class="text-[10px] font-semibold tracking-wider uppercase" style="color:var(--tx-label);">
+                                        <i class="fa-solid fa-hourglass-half" style="color:#fbbf24; margin-right:4px;"></i>Degradation Forecast</span>
+                                    <span id="forecast-rate" class="text-[10px] digit font-semibold" style="color:var(--tx-secondary);">—</span>
+                                </div>
+                                <div id="forecast-eta" class="text-2xl font-bold digit text-emerald-400">No trend</div>
+                                <div id="forecast-detail" class="text-[10.5px] mt-1 leading-snug" style="color:var(--tx-secondary);">
+                                    Tube health stable — no threshold breach projected.</div>
+                            </div>
+
+                            <!-- Combustion Tuning Advisor -->
+                            <div class="inner-card" id="advisor-card">
+                                <div class="flex justify-between items-center mb-1.5">
+                                    <span class="text-[10px] font-semibold tracking-wider uppercase" style="color:var(--tx-label);">
+                                        <i class="fa-solid fa-fire" style="color:#f97316; margin-right:4px;"></i>Combustion Advisor</span>
+                                    <span id="advisor-badge" class="text-[9px] font-bold px-2 py-0.5 rounded" style="background:var(--bg-elevated);color:var(--tx-secondary);border:1px solid var(--bd-inner);">STANDBY</span>
+                                </div>
+                                <div id="advisor-text" class="text-[11.5px] leading-relaxed" style="color:var(--tx-label);">
+                                    Waiting for telemetry…</div>
+                            </div>
+                        </div>
+
+                        <!-- Expert HMI Charts -->
+                        <div class="space-y-4">
+                            <!-- Row 1: Gauges & Bullet -->
+                            <div class="grid grid-cols-3 gap-3">
+                                <!-- Steam Pressure Gauge -->
+                                <div class="inner-card relative flex flex-col items-center">
+                                    <div class="text-[10px] w-full mb-1 text-center font-medium uppercase tracking-wider" style="color:var(--tx-label);">
+                                        STEAM PRESSURE</div>
+                                    <div class="relative w-full h-[80px] flex items-center justify-center">
+                                        <canvas id="chart-pressure-gauge"></canvas>
+                                        <div
+                                            class="absolute inset-0 flex items-center justify-center pt-8 flex-col pointer-events-none">
+                                            <span id="val-pressure" class="font-bold digit text-2xl" style="color:var(--tx-primary);">--</span>
+                                            <span class="text-[10px] font-semibold" style="color:var(--tx-label);">bar</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Drum Level Gauge -->
+                                <div class="inner-card relative flex flex-col items-center">
+                                    <div class="text-[10px] w-full mb-1 text-center font-medium uppercase tracking-wider" style="color:var(--tx-label);">
+                                        DRUM LEVEL</div>
+                                    <div class="relative w-full h-[80px] flex items-center justify-center">
+                                        <canvas id="chart-level-gauge"></canvas>
+                                        <div
+                                            class="absolute inset-0 flex items-center justify-center pt-8 flex-col pointer-events-none">
+                                            <span id="val-level" class="font-bold digit text-2xl" style="color:var(--tx-primary);">--</span>
+                                            <span class="text-[10px] font-semibold" style="color:var(--tx-label);">mm</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- O2 Percent Bullet Chart -->
+                                <div class="inner-card flex flex-col justify-center">
+                                    <div class="flex justify-between text-[10px] mb-3">
+                                        <span class="font-medium uppercase tracking-wider" style="color:var(--tx-label);">O₂ COMBUSTION</span>
+                                        <span id="val-o2" class="text-indigo-300 font-bold digit text-sm">--%</span>
+                                    </div>
+                                    <div class="relative h-4 rounded-sm w-full mt-2 overflow-hidden" style="background:var(--bg-elevated);border:1px solid var(--bd-inner);">
+                                        <!-- Background zones (Target 2-4%) -->
+                                        <div class="absolute h-full left-0 w-full flex">
+                                            <div class="h-full bg-orange-500/10" style="width: 20%"></div>
+                                            <!-- 0-2% Low O2 -->
+                                            <div class="h-full bg-emerald-500/30 border-x border-emerald-500/50"
+                                                style="width: 20%"></div> <!-- 2-4% Optimal -->
+                                            <div class="h-full bg-orange-500/10" style="width: 20%"></div>
+                                            <!-- 4-6% High O2 -->
+                                            <div class="h-full bg-red-500/10" style="width: 40%"></div>
+                                            <!-- >6% Danger -->
+                                        </div>
+                                        <!-- Actual Value Bar -->
+                                        <div id="bar-o2"
+                                            class="absolute h-1.5 top-[5px] left-0 bg-indigo-400 rounded-sm transition-all duration-300"
+                                            style="width: 0%"></div>
+                                    </div>
+                                    <div class="flex justify-between text-[9px] mt-1.5 font-medium" style="color:var(--tx-muted);">
+                                        <span>0%</span><span class="text-emerald-500">Target 3.2%</span><span>10%</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Row 2: Trends & Divergence -->
+                            <div class="grid grid-cols-2 gap-3">
+                                <!-- Efficiency, Tube Health, Heat Rate Line Chart -->
+                                <div class="inner-card">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <div class="text-[10px] font-semibold tracking-wider uppercase" style="color:var(--tx-label);">
+                                            System Performance Trends</div>
+                                    </div>
+                                    <div class="relative h-[120px] w-full">
+                                        <canvas id="chart-performance"></canvas>
+                                    </div>
+                                    <!-- Legend Custom -->
+                                    <div class="flex gap-4 mt-2 justify-center text-[9px] font-medium">
+                                        <div class="flex items-center gap-1.5">
+                                            <div class="w-2 h-2 rounded-full bg-emerald-500"></div><span
+                                                style="color:var(--tx-label);">Efficiency</span>
+                                        </div>
+                                        <div class="flex items-center gap-1.5">
+                                            <div class="w-2 h-2 rounded-full bg-blue-500"></div><span
+                                                style="color:var(--tx-label);">Tube Health</span>
+                                        </div>
+                                        <div class="flex items-center gap-1.5">
+                                            <div class="w-2 h-2 rounded-full bg-amber-500"></div><span
+                                                style="color:var(--tx-label);">Heat Rate</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Divergence Plot: Flue Gas vs Steam Temp -->
+                                <div class="inner-card">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <div class="text-[10px] font-semibold tracking-wider uppercase" style="color:var(--tx-label);">
+                                            Thermal Coupling</div>
+                                    </div>
+                                    <div class="relative h-[120px] w-full">
+                                        <canvas id="chart-divergence"></canvas>
+                                    </div>
+                                    <div class="flex gap-4 mt-2 justify-center text-[9px] font-medium">
+                                        <div class="flex items-center gap-1.5">
+                                            <div class="w-2 h-2 rounded-full bg-blue-500"></div><span
+                                                style="color:var(--tx-label);">Steam Temp</span>
+                                        </div>
+                                        <div class="flex items-center gap-1.5">
+                                            <div class="w-2 h-2 rounded-full bg-rose-500"></div><span
+                                                style="color:var(--tx-label);">Flue Gas Temp</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Row 3: Scatter & Anomaly Score -->
+                            <div class="grid grid-cols-2 gap-3">
+                                <!-- Scatter Plot: Fuel Flow vs Steam Output -->
+                                <div class="inner-card">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <div class="text-[10px] font-semibold tracking-wider uppercase" style="color:var(--tx-label);">
+                                            Degradation Scatter (Fuel vs Steam)</div>
+                                    </div>
+                                    <div class="relative h-[120px] w-full">
+                                        <canvas id="chart-scatter"></canvas>
+                                    </div>
+                                </div>
+
+                                <!-- Anomaly Score Area Chart -->
+                                <div class="inner-card">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <div class="text-[10px] font-semibold tracking-wider uppercase" style="color:var(--tx-label);">
+                                            ML Anomaly Score History</div>
+                                        <span id="val-anomaly"
+                                            class="text-emerald-500 font-bold digit text-[11px] px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20">0%</span>
+                                    </div>
+                                    <div class="relative h-[120px] w-full">
+                                        <canvas id="chart-anomaly"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TIMELINE / EVENT STRIP -->
+                <div id="auto-card" class="card">
+                    <div class="card-header flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:var(--bg-elevated);border:1px solid var(--bd-inner);color:var(--tx-secondary);">
+                                <i class="fa-solid fa-clock-rotate-left text-lg"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-lg font-bold text-zinc-100">Alert / Event Timeline</h2>
+                                <p class="text-zinc-400 text-xs font-medium">Real-time sequence of operational events</p>
+                            </div>
+                        </div>
+                        <div id="auto-status"
+                            class="text-xs px-3 py-1.5 rounded-md font-medium tracking-wide" style="background:var(--bg-elevated);color:var(--tx-secondary);border:1px solid var(--bd-inner);">
+                            MONITORING</div>
+                    </div>
+
+                    <!-- Horizontal Timeline Strip -->
+                    <div class="p-6 relative overflow-x-auto overflow-y-hidden whitespace-nowrap scroll-smooth"
+                        id="automation-feed" style="scrollbar-width: thin; scrollbar-color: #3f3f46 transparent;">
+                        <!-- Center Line -->
+                        <div class="absolute top-1/2 left-6 right-6 h-[1px] -translate-y-1/2 z-0" style="background:var(--bd-card);"></div>
+
+                        <!-- Timeline Items Container -->
+                        <div id="timeline-track" class="relative z-10 flex items-center min-w-full h-24 gap-6 px-2">
+                            <div class="text-sm italic whitespace-nowrap px-3 py-1 rounded-md" style="color:var(--tx-secondary);background:var(--bg-elevated);border:1px solid var(--bd-inner);">
+                                Listening for alerts on factory/pumphouse4/boiler/unit01/alerts...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT 1/3 -->
+            <div class="space-y-6">
+
+                <!-- AI ASSISTANT WIDGET -->
+                <div id="ai-chat-shell">
+                <div id="ai-chat-card" style="height:680px;">
+
+                    <!-- ── Header ── -->
+                    <div class="ai-widget-header">
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <!-- Animated icon -->
+                            <div style="position:relative;width:38px;height:38px;">
+                                <div style="position:absolute;inset:0;border-radius:10px;background:var(--accent);opacity:0.18;animation:ai-breathe 4.5s ease-in-out infinite;"></div>
+                                <div style="position:relative;width:38px;height:38px;border-radius:10px;border:1.5px solid var(--accent);background:var(--ai-chip-bg);display:flex;align-items:center;justify-content:center;font-size:16px;color:#fbbf24;">⬡</div>
+                            </div>
+                            <div>
+                                <div style="font-size:14px;font-weight:800;color:var(--tx-primary);letter-spacing:-0.02em;">Nexus AI</div>
+                                <div class="ai-model-pill" style="margin-top:3px;">
+                                    <span style="width:5px;height:5px;border-radius:50%;background:#4ade80;display:inline-block;"></span>
+                                    <span id="ai-model-label">llama-3.2-3b-instruct</span>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Status badge -->
+                        <div id="ai-online-badge" style="background:rgba(16,185,129,0.1);border:1px solid #166534;">
+                            <span class="relative flex h-2 w-2">
+                                <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 pulse-dot"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            <span id="ai-status-text" style="color:#4ade80;">Online</span>
+                        </div>
+                    </div>
+                    <div class="ai-shimmer-line"></div>
+
+                    <!-- ── Info bar ── -->
+                    <div class="ai-info-bar">
+                        <span><i class="fa-solid fa-bolt" style="color:var(--accent);"></i>BOILER-01</span>
+                        <span style="color:var(--bd-inner);">|</span>
+                        <span><i class="fa-solid fa-wifi" style="color:#4ade80;"></i>MQTT Live</span>
+                        <span style="color:var(--bd-inner);">|</span>
+                        <span><i class="fa-solid fa-clock"></i>60s context</span>
+                        <span style="margin-left:auto;"><i class="fa-solid fa-server" style="color:var(--accent);"></i>Local LLM</span>
+                    </div>
+
+                    <!-- ── Messages ── -->
+                    <div id="ai-chat-messages" class="hide-scrollbar space-y-3" style="padding:14px 14px;overflow-y:auto;flex:1;background:var(--ai-msg-bg);">
+                        <!-- Welcome message -->
+                        <div class="flex items-start gap-2 slide-in">
+                            <div class="ai-avatar">⬡</div>
+                            <div class="ai-bubble">
+                                <p>Welcome to <strong>Nexus AI</strong>. Monitoring Boiler-01 in real time via MQTT. I'll auto-generate incident cards when anomalies are detected — or try a quick prompt below.</p>
+                                <p class="bubble-time">System · Just now</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ── Quick chips ── -->
+                    <div id="chips-outer" class="chips-zone">
+                        <button id="chips-left-btn" onclick="scrollChips(-1)"
+                            style="display:none;position:absolute;left:4px;top:50%;transform:translateY(-50%);z-index:20;
+                                   width:22px;height:22px;border-radius:50%;background:var(--ai-chip-bg);border:1px solid var(--accent);
+                                   color:#fbbf24;font-size:14px;font-weight:700;align-items:center;justify-content:center;cursor:pointer;line-height:1;">‹</button>
+                        <button id="chips-right-btn" onclick="scrollChips(1)"
+                            style="display:none;position:absolute;right:4px;top:50%;transform:translateY(-50%);z-index:20;
+                                   width:22px;height:22px;border-radius:50%;background:var(--ai-chip-bg);border:1px solid var(--accent);
+                                   color:#fbbf24;font-size:14px;font-weight:700;align-items:center;justify-content:center;cursor:pointer;line-height:1;">›</button>
+                        <div id="chips-right-fade"
+                            style="position:absolute;right:0;top:0;bottom:0;width:36px;pointer-events:none;z-index:10;
+                                   background:linear-gradient(to right,transparent,var(--ai-msg-bg));opacity:0;transition:opacity 0.2s;"></div>
+                        <div id="chips-scroll" class="flex gap-2 overflow-x-auto hide-scrollbar" onscroll="updateChipArrows()">
+                            <div class="ai-chip" onclick="sendQuickQuestion('Run a full health check on the boiler right now. Anything I should worry about?')">⚡ Health check</div>
+                            <div class="ai-chip" onclick="sendQuickQuestion('Why is efficiency trending the way it is? Explain using current sensor values.')">📉 Efficiency</div>
+                            <div class="ai-chip" onclick="sendQuickQuestion('Based on the live telemetry, what is most likely to fail next and when should we intervene?')">🔮 Predict failure</div>
+                            <div class="ai-chip" onclick="sendQuickQuestion('What if drum level drops to 180mm?')">🧪 What-if: drum</div>
+                            <div class="ai-chip" onclick="sendQuickQuestion('What should the maintenance team prioritize this week, in order?')">🧰 Priorities</div>
+                            <div class="ai-chip" onclick="requestShiftReport()">📋 Shift report</div>
+                        </div>
+                    </div>
+
+                    <!-- ── Input ── -->
+                    <div class="ai-input-zone">
+                        <div class="ai-input-wrap">
+                            <i class="fa-solid fa-message" style="font-size:12px;color:var(--tx-muted);flex-shrink:0;"></i>
+                            <input id="ai-chat-input" type="text" placeholder="Ask about the plant…">
+                            <button class="ai-send-btn" id="ai-chat-send" onclick="sendChatMessage()">
+                                <i class="fa-solid fa-paper-plane" style="font-size:11px;"></i>
+                            </button>
+                        </div>
+                        <p class="ai-powered-line" id="ai-powered-line">Powered by Local LLM · Ollama · Live 60s telemetry context</p>
+                    </div>
+
+                </div>
+                </div>
+
+                <!-- Live Tag Values -->
+                <div id="live-tags-card" class="card p-6">
+                    <h3 class="text-xs uppercase tracking-widest mb-4 font-bold" style="color:#a16207;">All Live Tags</h3>
+
+                    <!-- ML ANOMALY SCORE -->
+                    <div class="mb-5 p-3 rounded-lg" style="background:var(--ai-think-bg); border:1px solid var(--accent-border);">
+                        <div class="flex justify-between text-xs mb-2">
+                            <span class="font-semibold uppercase tracking-wider" style="color:var(--tx-muted);">ML Anomaly Score</span>
+                            <span id="ml-status" class="text-emerald-400 font-bold">NORMAL</span>
+                        </div>
+                        <div class="h-2 rounded-full overflow-hidden mb-2" style="background:var(--bd-stream);">
+                            <div id="ml-bar" class="h-full bg-emerald-500 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                        <div class="text-[10px] font-medium" style="color:var(--tx-muted);">Isolation Forest v1.0 · Real-time inference</div>
+                    </div>
+
+                    <div class="space-y-1 text-[13px] font-medium">
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Steam Pressure</span>
+                            <span id="tag-pressure" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Steam Temperature</span>
+                            <span id="tag-temp" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Steam Flow</span>
+                            <span id="tag-steamflow" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Drum Level</span>
+                            <span id="tag-level" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Feedwater Flow</span>
+                            <span id="tag-fwflow" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Feedwater Temp</span>
+                            <span id="tag-fwtemp" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Fuel Flow</span>
+                            <span id="tag-fuel" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Air Flow</span>
+                            <span id="tag-air" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">O₂ %</span>
+                            <span id="tag-o2" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Flue Gas Temp</span>
+                            <span id="tag-fluegas" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Tube Health</span>
+                            <span id="tag-tube" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Efficiency</span>
+                            <span id="tag-eff" class="tag-value digit" style="color:var(--tx-value);">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between border-b border-zinc-800/40 pb-2 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Flame Status</span>
+                            <span id="tag-flame" class="tag-value text-emerald-400 font-bold">--</span>
+                        </div>
+                        <div class="tag-row flex justify-between pb-1 pt-1">
+                            <span class="tag-label" style="color:var(--tx-label);">Safety Valve</span>
+                            <span id="tag-sv" class="tag-value text-emerald-400 font-bold">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================================
+        // STATE
+        // ============================================================
+        let msgCount = 0;
+        let workOrderCount = 47820;
+        let lastAlertTime = 0;
+
+        // ============================================================
+        // EXPERT HMI CHARTS
+        // ============================================================
+
+        // Gauge Configuration (Doughnut)
+        function makeGaugeChart(id, maxVal) {
+            return new Chart(document.getElementById(id), {
+                type: 'doughnut',
+                data: {
+                    datasets: [{
+                        data: [0, maxVal],
+                        backgroundColor: ['#10b981', '#334155'],
+                        borderWidth: 0,
+                        circumference: 180,
+                        rotation: 270
+                    }]
+                },
+                options: {
+                    animation: false,
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '75%',
+                    plugins: { tooltip: { enabled: false }, legend: { display: false } }
+                }
+            });
+        }
+
+        // Line Chart Configuration
+        function makeLineChart(id, datasets, yScales) {
+            return new Chart(document.getElementById(id), {
+                type: 'line',
+                data: { labels: [], datasets: datasets },
+                options: {
+                    animation: false,
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+                    scales: {
+                        x: { display: false },
+                        ...yScales
+                    }
+                }
+            });
+        }
+
+        // Scatter Chart
+        function makeScatterChart(id) {
+            return new Chart(document.getElementById(id), {
+                type: 'scatter',
+                data: { datasets: [{ label: 'Live Cluster', data: [], backgroundColor: '#3b82f6', pointRadius: 3 }] },
+                options: {
+                    animation: false, responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: true, min: 120, max: 180, grid: { color: '#2d3748' }, ticks: { color: '#94a3b8', font: { size: 9 } } },
+                        y: { display: true, min: 2000, max: 2600, grid: { color: '#2d3748' }, ticks: { color: '#94a3b8', font: { size: 9 } } }
+                    }
+                }
+            });
+        }
+
+        const charts = {
+            pressureGauge: makeGaugeChart('chart-pressure-gauge', 16),
+            levelGauge: makeGaugeChart('chart-level-gauge', 600),
+            performance: makeLineChart('chart-performance', [
+                { label: 'Efficiency %', borderColor: '#10b981', data: [], yAxisID: 'y', borderWidth: 2, pointRadius: 0, tension: 0.3 },
+                { label: 'Tube Health %', borderColor: '#3b82f6', data: [], yAxisID: 'y', borderWidth: 2, borderDash: [4, 4], pointRadius: 0, tension: 0.3 },
+                { label: 'Heat Rate', borderColor: '#f59e0b', data: [], yAxisID: 'y2', borderWidth: 2, pointRadius: 0, tension: 0.3 }
+            ], {
+                y: { type: 'linear', position: 'left', min: 40, max: 100, grid: { color: '#2d3748' }, ticks: { color: '#94a3b8', font: { size: 9 } } },
+                y2: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#94a3b8', font: { size: 9 } } }
+            }),
+            divergence: makeLineChart('chart-divergence', [
+                { label: 'Steam Temp', borderColor: '#3b82f6', data: [], borderWidth: 2, pointRadius: 0, tension: 0.3 },
+                { label: 'Flue Gas Temp', borderColor: '#f43f5e', data: [], fill: '-1', backgroundColor: 'rgba(244, 63, 94, 0.2)', borderWidth: 2, pointRadius: 0, tension: 0.3 }
+            ], {
+                y: { min: 150, max: 320, grid: { color: '#2d3748' }, ticks: { color: '#94a3b8', font: { size: 9 } } }
+            }),
+            anomaly: makeLineChart('chart-anomaly', [
+                { label: 'Anomaly Score', borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.2)', fill: true, data: [], borderWidth: 2, pointRadius: 0, tension: 0.4 }
+            ], {
+                y: { min: 0, max: 100, grid: { color: '#2d3748' }, ticks: { color: '#94a3b8', font: { size: 9 } } }
+            }),
+            scatter: makeScatterChart('chart-scatter')
+        };
+
+        function pushLineData(chart, values, max = 60) {
+            chart.data.labels.push('');
+            values.forEach((v, i) => {
+                if (chart.data.datasets[i]) {
+                    chart.data.datasets[i].data.push(v);
+                }
+            });
+            if (chart.data.labels.length > max) {
+                chart.data.labels.shift();
+                chart.data.datasets.forEach(ds => ds.data.shift());
+            }
+            chart.update('none');
+        }
+
+        // ============================================================
+        // INTELLIGENCE STREAM
+        // ============================================================
+        function stream(msg, color = 'emerald') {
+            const s = document.getElementById('stream');
+            const ts = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.className = `slide-in text-${color}-400`;
+            div.innerHTML = `<span class="text-slate-600">[${ts}]</span> ${msg}`;
+            s.appendChild(div);
+            while (s.children.length > 30) s.removeChild(s.firstChild);
+            s.scrollTop = s.scrollHeight;
+        }
+
+        // ============================================================
+        // CLOCK
+        // ============================================================
+        setInterval(() => {
+            document.getElementById('current-time').textContent = new Date().toLocaleTimeString();
+        }, 1000);
+
+        // ============================================================
+        // MQTT CONNECTION
+        // ============================================================
+        const MQTT_URL = 'ws://localhost:9001';
+        const client = mqtt.connect(MQTT_URL, {
+            clientId: 'nexus_dashboard_' + Math.random().toString(16).substr(2, 8),
+            reconnectPeriod: 2000
+        });
+
+        client.on('connect', () => {
+            document.getElementById('mqtt-status').innerHTML = `
+        <span class="relative flex h-2 w-2">
+          <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 pulse-dot"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+        </span>
+        <span class="text-emerald-400">LIVE • MQTT CONNECTED</span>
+      `;
+            stream('✓ Connected to Mosquitto broker on port 9001', 'emerald');
+
+            // Subscribe to all boiler topics
+            client.subscribe('factory/pumphouse4/boiler/#', (err) => {
+                if (!err) stream('✓ Subscribed to factory/pumphouse4/boiler/#', 'emerald');
+            });
+        });
+
+        client.on('error', (err) => {
+            stream('✗ MQTT Error: ' + err.message, 'red');
+        });
+
+        client.on('reconnect', () => {
+            stream('⟳ Attempting reconnect...', 'amber');
+        });
+
+        // ============================================================
+        // MESSAGE HANDLER — THE BRAIN
+        // ============================================================
+        client.on('message', (topic, payload) => {
+            msgCount++;
+            document.getElementById('msg-count').textContent = msgCount;
+
+            try {
+                const msg = JSON.parse(payload.toString());
+
+                // ===== HEARTBEAT = FULL PAYLOAD =====
+                if (topic.endsWith('/heartbeat')) {
+                    handleHeartbeat(msg);
+                }
+
+                // ===== ALERTS =====
+                else if (topic.endsWith('/alerts')) {
+                    handleAlert(msg);
+                }
+
+                // ===== MODE CHANGES =====
+                else if (topic.endsWith('/mode')) {
+                    updateMode(payload.toString());
+                }
+
+                // ===== ML ANOMALY SCORE =====
+                else if (topic.endsWith('/anomaly_score')) {
+                    const score = msg.score;
+                    const status = document.getElementById('val-anomaly');
+
+                    if (status) {
+                        status.textContent = score.toFixed(1) + '%';
+                        if (score < 30) { status.className = 'text-emerald-400 font-bold digit text-[11px] px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20'; }
+                        else if (score < 70) { status.className = 'text-amber-400 font-bold digit text-[11px] px-2 py-0.5 bg-amber-500/10 rounded border border-amber-500/20'; }
+                        else { status.className = 'text-red-500 font-bold digit text-[11px] px-2 py-0.5 bg-red-500/10 rounded border border-red-500/20 animate-pulse'; }
+                    }
+
+                    // Update Area Chart
+                    pushLineData(charts.anomaly, [score]);
+                    const color = score > 70 ? '#ef4444' : (score > 30 ? '#f59e0b' : '#10b981');
+                    const bg = score > 70 ? 'rgba(239, 68, 68, 0.2)' : (score > 30 ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)');
+                    charts.anomaly.data.datasets[0].borderColor = color;
+                    charts.anomaly.data.datasets[0].backgroundColor = bg;
+                    charts.anomaly.update('none');
+                }
+
+                // ===== AI DIAGNOSIS (Incident Cards) =====
+                else if (topic.endsWith('/ai/diagnosis')) {
+                    handleDiagnosis(msg);
+                }
+
+                // ===== AI CHAT RESPONSE =====
+                else if (topic.endsWith('/ai/response')) {
+                    removeAiThinking();
+                    if (msg.type === 'shift_report') {
+                        addAiMessage(buildShiftReportCard(msg));
+                    } else if (msg.type === 'what_if') {
+                        addAiMessage(buildWhatIfCard(msg));
+                    } else {
+                        const answer = msg.answer || msg.response || 'No response received.';
+                        addTypedAnswer(answer);
+                    }
+                }
+
+                // ===== AI STATUS (Online / Analyzing) =====
+                else if (topic.endsWith('/ai/status')) {
+                    updateAiStatus(msg.status || 'online');
+                }
+
+            } catch (e) {
+                // Non-JSON payload (mode topic just sends string)
+                if (topic.endsWith('/mode')) {
+                    updateMode(payload.toString());
+                }
+            }
+        });
+
+        // ============================================================
+        // HEARTBEAT HANDLER (Updates all sensor values)
+        // ============================================================
+        function handleHeartbeat(data) {
+            const t = data.tags;
+
+            // Update Gauges
+            const pressColor = t.steam_pressure > 13 ? '#ef4444' : (t.steam_pressure > 12 ? '#f59e0b' : '#10b981');
+            charts.pressureGauge.data.datasets[0].data = [t.steam_pressure, 16 - t.steam_pressure];
+            charts.pressureGauge.data.datasets[0].backgroundColor[0] = pressColor;
+            charts.pressureGauge.update('none');
+
+            const lvlColor = t.drum_level < 200 ? '#ef4444' : (t.drum_level < 280 ? '#f59e0b' : '#10b981');
+            charts.levelGauge.data.datasets[0].data = [t.drum_level, 600 - t.drum_level];
+            charts.levelGauge.data.datasets[0].backgroundColor[0] = lvlColor;
+            charts.levelGauge.update('none');
+
+            // Update Bullet Chart O2
+            const o2pct = Math.min(Math.max(t.o2_percent, 0), 10) * 10;
+            const o2Color = (t.o2_percent >= 2 && t.o2_percent <= 4) ? '#10b981' : (t.o2_percent < 2 || (t.o2_percent > 4 && t.o2_percent <= 6) ? '#f59e0b' : '#ef4444');
+            const o2Bar = document.getElementById('bar-o2');
+            o2Bar.style.width = o2pct + '%';
+            o2Bar.style.backgroundColor = o2Color;
+
+            // Update Line & Scatter Charts
+            pushLineData(charts.performance, [t.efficiency, t.tube_health, t.heat_rate]);
+            pushLineData(charts.divergence, [t.steam_temperature, t.flue_gas_temp]);
+
+            charts.scatter.data.datasets[0].data.push({ x: t.fuel_flow, y: t.steam_flow });
+            if (charts.scatter.data.datasets[0].data.length > 50) charts.scatter.data.datasets[0].data.shift();
+            charts.scatter.update('none');
+
+            // Update chart text headers
+            document.getElementById('val-pressure').textContent = t.steam_pressure.toFixed(1);
+            document.getElementById('val-level').textContent = Math.round(t.drum_level);
+            document.getElementById('val-o2').textContent = t.o2_percent.toFixed(2) + '%';
+
+            // Update side panel
+            document.getElementById('tag-pressure').textContent = t.steam_pressure.toFixed(2) + ' bar';
+            document.getElementById('tag-temp').textContent = t.steam_temperature.toFixed(1) + ' °C';
+            document.getElementById('tag-steamflow').textContent = Math.round(t.steam_flow) + ' kg/hr';
+            document.getElementById('tag-level').textContent = Math.round(t.drum_level) + ' mm';
+            document.getElementById('tag-fwflow').textContent = Math.round(t.feedwater_flow) + ' kg/hr';
+            document.getElementById('tag-fwtemp').textContent = t.feedwater_temp.toFixed(1) + ' °C';
+            document.getElementById('tag-fuel').textContent = t.fuel_flow.toFixed(1) + ' m³/hr';
+            document.getElementById('tag-air').textContent = Math.round(t.air_flow) + ' m³/hr';
+            document.getElementById('tag-o2').textContent = t.o2_percent.toFixed(2) + ' %';
+            document.getElementById('tag-fluegas').textContent = t.flue_gas_temp.toFixed(1) + ' °C';
+            document.getElementById('tag-tube').textContent = t.tube_health.toFixed(1) + ' %';
+            document.getElementById('tag-eff').textContent = t.efficiency.toFixed(1) + ' %';
+
+            // Flame status
+            const flameEl = document.getElementById('tag-flame');
+            flameEl.textContent = t.flame_status ? 'ON' : 'OFF';
+            flameEl.className = t.flame_status ? 'text-emerald-400 font-bold' : 'text-red-500 font-bold animate-pulse';
+
+            // Safety valve
+            const svEl = document.getElementById('tag-sv');
+            svEl.textContent = t.safety_valve ? 'OPEN' : 'CLOSED';
+            svEl.className = t.safety_valve ? 'text-red-500 font-bold animate-pulse' : 'text-emerald-400 font-bold';
+
+            // Calculate risk score (simple version, will be replaced by ML)
+            updateRisk(t, data.degradation_factor);
+
+            // AI panels: degradation forecast + combustion tuning advisor
+            updateForecast(t);
+            updateAdvisor(t);
+        }
+
+        // ============================================================
+        // DEGRADATION RATE FORECASTER
+        // Least-squares fit on the tube health trend → countdown to the
+        // 70% inspection threshold.
+        // ============================================================
+        const TUBE_THRESHOLD = 70;
+        let healthHistory = [];      // { t: epoch seconds, v: tube_health }
+        let forecastDeadline = null; // epoch seconds when tube health hits 70%
+
+        function formatEta(s) {
+            if (s >= 86400) return '~' + (s / 86400).toFixed(1) + ' days';
+            if (s >= 3600) return '~' + Math.floor(s / 3600) + 'h ' + Math.round((s % 3600) / 60) + 'm';
+            if (s >= 60) return '~' + Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+            return '~' + Math.max(Math.round(s), 0) + 's';
+        }
+
+        function updateForecast(t) {
+            const now = Date.now() / 1000;
+            healthHistory.push({ t: now, v: t.tube_health });
+            if (healthHistory.length > 45) healthHistory.shift();
+
+            const etaEl = document.getElementById('forecast-eta');
+            const rateEl = document.getElementById('forecast-rate');
+            const detailEl = document.getElementById('forecast-detail');
+
+            if (t.tube_health <= TUBE_THRESHOLD) {
+                forecastDeadline = null;
+                etaEl.textContent = 'BREACHED';
+                etaEl.className = 'text-2xl font-bold digit text-red-500 animate-pulse';
+                rateEl.textContent = '';
+                detailEl.textContent = `Tube health ${t.tube_health.toFixed(1)}% is below the ${TUBE_THRESHOLD}% inspection threshold — schedule inspection now.`;
+                return;
+            }
+            if (healthHistory.length < 10) return;
+
+            // Least-squares slope over the rolling window (% per second)
+            const n = healthHistory.length;
+            const t0 = healthHistory[0].t;
+            let sx = 0, sy = 0, sxy = 0, sxx = 0;
+            for (const p of healthHistory) {
+                const x = p.t - t0;
+                sx += x; sy += p.v; sxy += x * p.v; sxx += x * x;
+            }
+            const denom = n * sxx - sx * sx;
+            const slope = denom !== 0 ? (n * sxy - sx * sy) / denom : 0;
+
+            if (slope < -0.004) {
+                const eta = (t.tube_health - TUBE_THRESHOLD) / (-slope);
+                forecastDeadline = now + eta;
+                rateEl.textContent = (slope * 60).toFixed(2) + ' %/min';
+                rateEl.style.color = '#f87171';
+                detailEl.textContent = `At this rate, tube health hits the ${TUBE_THRESHOLD}% threshold in ${formatEta(eta)}.`;
+                renderForecastCountdown();
+            } else {
+                forecastDeadline = null;
+                rateEl.textContent = slope > 0.004 ? 'recovering' : 'stable';
+                rateEl.style.color = '#4ade80';
+                etaEl.textContent = 'No trend';
+                etaEl.className = 'text-2xl font-bold digit text-emerald-400';
+                detailEl.textContent = 'Tube health stable — no threshold breach projected.';
+            }
+        }
+
+        function renderForecastCountdown() {
+            if (forecastDeadline == null) return;
+            const remaining = forecastDeadline - Date.now() / 1000;
+            const etaEl = document.getElementById('forecast-eta');
+            if (remaining <= 0) {
+                etaEl.textContent = 'IMMINENT';
+                etaEl.className = 'text-2xl font-bold digit text-red-500 animate-pulse';
+                return;
+            }
+            etaEl.textContent = formatEta(remaining);
+            etaEl.className = remaining < 90 ? 'text-2xl font-bold digit text-red-500 animate-pulse'
+                : remaining < 600 ? 'text-2xl font-bold digit text-orange-400'
+                : 'text-2xl font-bold digit text-amber-400';
+        }
+        setInterval(renderForecastCountdown, 1000);
+
+        // ============================================================
+        // COMBUSTION TUNING ADVISOR
+        // Live one-liner from O₂ vs the 2-4% optimal band. Excess-air %
+        // uses the lambda approximation λ = 20.9 / (20.9 - O₂).
+        // ============================================================
+        function updateAdvisor(t) {
+            const textEl = document.getElementById('advisor-text');
+            const badgeEl = document.getElementById('advisor-badge');
+            const o2 = t.o2_percent;
+
+            const setBadge = (label, cls) => {
+                badgeEl.textContent = label;
+                badgeEl.className = 'text-[9px] font-bold px-2 py-0.5 rounded ' + cls;
+            };
+
+            if (!t.flame_status) {
+                setBadge('OFFLINE', 'border border-zinc-500/40');
+                textEl.textContent = 'Burner offline — combustion advisor on standby until flame is re-established.';
+                return;
+            }
+
+            const lambda = 20.9 / (20.9 - Math.min(o2, 20));
+            const lambdaOpt = 20.9 / (20.9 - 3.2);
+            const airAbove = (lambda / lambdaOpt - 1) * 100;
+            const recoverable = Math.max(0, o2 - 3.0) * 0.8; // matches engine efficiency model
+
+            if (o2 > 4.0) {
+                setBadge(o2 > 6 ? 'EXCESS AIR' : 'HIGH O₂', o2 > 6
+                    ? 'bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse'
+                    : 'bg-amber-500/10 text-amber-400 border border-amber-500/20');
+                textEl.innerHTML = `Air flow ~<span class="sensor-val">${airAbove.toFixed(0)}%</span> above optimal. ` +
+                    `Trim air damper to reduce excess O₂ from <span class="sensor-val">${o2.toFixed(1)}%</span> → ` +
+                    `<span class="sensor-val">3.2%</span> and recover ~<span class="sensor-val">${recoverable.toFixed(1)}%</span> efficiency.`;
+            } else if (o2 < 2.0) {
+                setBadge('LOW O₂', 'bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse');
+                textEl.innerHTML = `O₂ at <span class="sensor-val">${o2.toFixed(1)}%</span> — below the safe 2–4% band. ` +
+                    `Increase air flow toward <span class="sensor-val">3.2%</span> O₂ to avoid incomplete combustion and CO formation.`;
+            } else {
+                setBadge('OPTIMAL', 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20');
+                textEl.innerHTML = `O₂ at <span class="sensor-val">${o2.toFixed(2)}%</span> is inside the optimal 2–4% band. ` +
+                    `Air-fuel ratio well tuned — no damper trim needed.`;
+            }
+        }
+
+        // ============================================================
+        // RISK CALCULATION
+        // ============================================================
+        function updateRisk(t, degradation) {
+            // Composite risk based on multiple factors
+            let risk = degradation * 100;
+
+            // Boost risk if specific thresholds crossed
+            if (t.drum_level < 280) risk += 15;
+            if (t.steam_pressure > 13) risk += 20;
+            if (t.tube_health < 70) risk += 10;
+            if (t.flame_status === 0) risk = 100;
+
+            risk = Math.min(Math.round(risk), 99);
+
+            document.getElementById('risk-number').textContent = risk + '%';
+            const bar = document.getElementById('risk-bar');
+            const statusEl = document.getElementById('risk-status');
+            bar.style.width = risk + '%';
+
+            if (risk < 25) {
+                bar.className = 'risk-bar h-full bg-emerald-500 rounded-full';
+                statusEl.textContent = 'Normal';
+                statusEl.className = 'text-emerald-400';
+            } else if (risk < 50) {
+                bar.className = 'risk-bar h-full bg-amber-500 rounded-full';
+                statusEl.textContent = 'Elevated';
+                statusEl.className = 'text-amber-400';
+            } else if (risk < 75) {
+                bar.className = 'risk-bar h-full bg-orange-500 rounded-full';
+                statusEl.textContent = 'High';
+                statusEl.className = 'text-orange-400';
+            } else {
+                bar.className = 'risk-bar h-full bg-red-500 rounded-full animate-pulse';
+                statusEl.textContent = 'CRITICAL';
+                statusEl.className = 'text-red-400 font-bold';
+                document.getElementById('predict-card').classList.add('glow-red');
+            }
+        }
+
+        // ============================================================
+        // ALERT HANDLER → SMART AUTOMATION
+        // ============================================================
+        function handleAlert(alert) {
+            const now = Date.now();
+            // Throttle: max 1 alert every 3 seconds to dashboard
+            if (now - lastAlertTime < 3000) return;
+            lastAlertTime = now;
+
+            stream(`⚠ ${alert.severity}: ${alert.message}`,
+                alert.severity === 'CRITICAL' ? 'red' :
+                    alert.severity === 'HIGH' ? 'orange' : 'amber');
+
+            // Trigger automation cascade
+            triggerAutomation(alert);
+        }
+
+        function triggerAutomation(alert) {
+            const track = document.getElementById('timeline-track');
+            if (track.querySelector('.italic')) track.innerHTML = '';
+
+            const statusEl = document.getElementById('auto-status');
+            statusEl.textContent = 'ACTIVE';
+            statusEl.className = 'bg-red-500 text-white text-xs px-4 py-2 rounded-xl font-bold animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.5)]';
+
+            const isCritical = alert.severity === 'CRITICAL';
+            const colorClass = isCritical ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]' :
+                (alert.severity === 'HIGH' ? 'bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.8)]' : 'bg-amber-500');
+            const textColorClass = isCritical ? 'text-red-400' : (alert.severity === 'HIGH' ? 'text-orange-400' : 'text-amber-400');
+
+            const node = document.createElement('div');
+            node.className = 'relative flex flex-col items-center flex-shrink-0 group slide-in w-24 hover:z-50';
+
+            const time = new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+            node.innerHTML = `
+                <!-- Tooltip (top) -->
+                <div class="absolute -top-10 whitespace-nowrap text-[10px] px-2 py-1 rounded shadow-xl opacity-0 group-hover:opacity-100 transition-opacity z-50 pointer-events-none" style="background:var(--bg-elevated);border:1px solid var(--bd-inner);color:var(--tx-primary);">
+                    <span class="font-bold ${textColorClass}">${alert.severity}</span> • ${alert.tag} = ${alert.value.toFixed(1)}
+                </div>
+
+                <!-- Dot on line -->
+                <div class="w-4 h-4 rounded-full z-10 ${colorClass}" style="border:2px solid var(--bg-base);"></div>
+
+                <!-- Label (bottom) -->
+                <div class="absolute top-6 w-32 text-center flex flex-col items-center">
+                    <div class="text-[9px] font-bold tracking-wider" style="color:var(--tx-secondary);">${time}</div>
+                    <div class="text-[9px] leading-tight mt-0.5 max-w-[120px] line-clamp-2 truncate" style="color:var(--tx-muted);" title="${alert.message}">
+                        ${alert.message}
+                    </div>
+                </div>
+            `;
+
+            track.appendChild(node);
+
+            const feed = document.getElementById('automation-feed');
+            feed.scrollLeft = feed.scrollWidth;
+
+            if (track.children.length > 20) track.removeChild(track.firstChild);
+        }
+
+        // ============================================================
+        // MODE DISPLAY
+        // ============================================================
+        function updateMode(mode) {
+            const el = document.getElementById('mode-display');
+            el.textContent = mode;
+            const colors = {
+                'NORMAL': 'text-emerald-400',
+                'DEGRADING': 'text-amber-400',
+                'CRITICAL': 'text-orange-400 font-bold',
+                'FAULT': 'text-red-500 font-bold animate-pulse'
+            };
+            el.className = colors[mode] || 'text-slate-400';
+
+            if (mode !== 'NORMAL') {
+                stream(`▶ Mode changed: ${mode}`, mode === 'FAULT' ? 'red' : 'amber');
+            }
+        }
+
+        // ============================================================
+        // AI CHAT PANEL — Oxmaint-Style Functions
+        // ============================================================
+        let aiChatWoCount = 47820;
+
+function addAiMessage(html) {
+    const container = document.getElementById('ai-chat-messages');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-start gap-2 slide-in';
+    wrapper.innerHTML = `
+        <div class="ai-avatar">⬡</div>
+        <div style="max-width:88%">${html}</div>
+    `;
+    container.appendChild(wrapper);
+    while (container.children.length > 25) container.removeChild(container.firstChild);
+    container.scrollTop = container.scrollHeight;
+}
+
+function addUserMessage(text) {
+    const container = document.getElementById('ai-chat-messages');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex justify-end slide-in';
+    wrapper.innerHTML = `<div class="user-bubble">${text}</div>`;
+    container.appendChild(wrapper);
+    container.scrollTop = container.scrollHeight;
+}
+
+const THINKING_PHASES = [
+    'Reading last 60s of live telemetry…',
+    'Correlating sensor deviations…',
+    'Reasoning with local LLM…',
+    'Drafting answer…'
+];
+let thinkingTimer = null;
+
+function addAiThinking() {
+    const container = document.getElementById('ai-chat-messages');
+    const wrapper = document.createElement('div');
+    wrapper.id = 'ai-thinking';
+    wrapper.className = 'flex items-start gap-2 slide-in';
+    wrapper.innerHTML = `
+        <div class="ai-avatar">⬡</div>
+        <div class="ai-bubble" style="padding:10px 14px;">
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--tx-muted);">
+                <i class="fa-solid fa-spinner fa-spin" style="font-size:11px;color:var(--accent);"></i>
+                <span id="ai-thinking-phase">${THINKING_PHASES[0]}</span>
+            </div>
+        </div>
+    `;
+    container.appendChild(wrapper);
+    container.scrollTop = container.scrollHeight;
+
+    let phase = 0;
+    clearInterval(thinkingTimer);
+    thinkingTimer = setInterval(() => {
+        phase = (phase + 1) % THINKING_PHASES.length;
+        const el = document.getElementById('ai-thinking-phase');
+        if (el) el.textContent = THINKING_PHASES[phase];
+    }, 1400);
+}
+
+        function removeAiThinking() {
+            clearInterval(thinkingTimer);
+            thinkingTimer = null;
+            const el = document.getElementById('ai-thinking');
+            if (el) el.remove();
+        }
+
+        // ---- Rich formatting: escape, **bold**, highlight sensor values ----
+        function escapeHtml(s) {
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function formatRich(text) {
+            let html = escapeHtml(text);
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/(-?\d+(?:\.\d+)?\s?(?:bar|°C|%|mm|kg\/hr|m³\/hr|m3\/hr))/g, '<span class="sensor-val">$1</span>');
+            return html;
+        }
+
+        // ---- Typewriter effect for chat answers ----
+        function addTypedAnswer(answer) {
+            const bubble = `
+                <div class="ai-bubble" style="max-width:88%;">
+                    <div class="typed-target" style="font-size:12.5px;line-height:1.65;color:var(--tx-primary);"></div>
+                    <p class="bubble-time">Nexus AI · ${new Date().toLocaleTimeString()}</p>
+                </div>
+            `;
+            addAiMessage(bubble);
+            const container = document.getElementById('ai-chat-messages');
+            const targets = container.querySelectorAll('.typed-target');
+            const target = targets[targets.length - 1];
+            const paragraphs = answer.split('\n').filter(p => p.trim());
+            typeParagraphs(target, paragraphs, container);
+        }
+
+        function typeParagraphs(target, paragraphs, container) {
+            let pIdx = 0;
+            function nextPara() {
+                if (pIdx >= paragraphs.length || !target.isConnected) return;
+                const p = document.createElement('p');
+                p.style.marginBottom = '6px';
+                p.classList.add('type-cursor');
+                target.appendChild(p);
+                const text = paragraphs[pIdx];
+                let i = 0;
+                const timer = setInterval(() => {
+                    i += 3;
+                    p.textContent = text.slice(0, i);
+                    container.scrollTop = container.scrollHeight;
+                    if (i >= text.length) {
+                        clearInterval(timer);
+                        p.classList.remove('type-cursor');
+                        p.innerHTML = formatRich(text);
+                        pIdx++;
+                        nextPara();
+                    }
+                }, 16);
+            }
+            nextPara();
+        }
+
+        // ---- Quick prompts ----
+        function sendQuickQuestion(q) {
+            const input = document.getElementById('ai-chat-input');
+            input.value = q;
+            sendChatMessage();
+        }
+
+        function requestShiftReport() {
+            addUserMessage('📋 Generate the end-of-shift report');
+            client.publish('factory/pumphouse4/boiler/unit01/ai/question', JSON.stringify({
+                type: 'shift_report',
+                timestamp: new Date().toISOString()
+            }));
+            addAiThinking();
+        }
+
+        // ---- End-of-Shift Report Card ----
+        function buildShiftReportCard(d) {
+            const ts = new Date().toLocaleTimeString();
+            const alerts = d.alerts || {};
+            const totalAlerts = (alerts.CRITICAL || 0) + (alerts.HIGH || 0) + (alerts.WARNING || 0) + (alerts.LOW || 0);
+            const eff = d.efficiency || {};
+            const effDelta = (eff.start != null && eff.end != null) ? (eff.end - eff.start) : null;
+            const effDeltaStr = effDelta == null ? '--' : (effDelta >= 0 ? '+' : '') + effDelta.toFixed(1) + '%';
+            const effColor = effDelta == null ? 'var(--tx-secondary)' : (effDelta >= -0.5 ? '#4ade80' : '#f87171');
+
+            const statusColors = { good: '#22c55e', fair: '#f59e0b', poor: '#ef4444' };
+            const status = (d.overall_status || 'fair').toLowerCase();
+            const sColor = statusColors[status] || '#f59e0b';
+
+            const stat = (label, value, color = 'var(--tx-primary)') => `
+                <div style="background:var(--ai-chip-bg);border:1px solid var(--ai-bubble-bd);border-radius:8px;padding:8px 10px;text-align:center;">
+                    <div style="font-size:15px;font-weight:700;color:${color};" class="digit">${value}</div>
+                    <div style="font-size:9px;color:var(--tx-muted);text-transform:uppercase;letter-spacing:0.05em;margin-top:2px;">${label}</div>
+                </div>`;
+
+            const list = (items, icon, color) => (items || []).map(x =>
+                `<div style="display:flex;gap:7px;font-size:11.5px;color:var(--tx-label);line-height:1.5;padding:2px 0;">
+                    <span style="color:${color};flex-shrink:0;">${icon}</span><span>${formatRich(String(x))}</span>
+                </div>`).join('');
+
+            return `
+                <div style="background:var(--bg-ai);border-radius:12px 12px 12px 4px;overflow:hidden;border:1px solid var(--ai-bubble-bd);box-shadow:0 10px 25px -5px rgba(0,0,0,0.5);">
+                    <div style="padding:12px 16px;border-bottom:1px solid var(--ai-bubble-bd);background:var(--ai-chip-bg);display:flex;align-items:center;justify-content:space-between;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <i class="fa-solid fa-file-lines" style="color:#fbbf24;font-size:13px;"></i>
+                            <span style="font-weight:700;color:var(--accent-text);font-size:13px;">End-of-Shift Report</span>
+                        </div>
+                        <span style="background:${sColor};color:#09090b;font-size:9px;padding:2px 9px;border-radius:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;">${status}</span>
+                    </div>
+                    <div style="padding:12px 16px;">
+                        ${d.summary ? `<p style="font-size:12px;color:var(--tx-label);line-height:1.6;margin-bottom:10px;">${formatRich(String(d.summary))}</p>` : ''}
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;">
+                            ${stat('Uptime', (d.uptime_pct != null ? d.uptime_pct.toFixed(1) + '%' : '--'), '#4ade80')}
+                            ${stat('Anomalies', d.anomaly_events != null ? d.anomaly_events : '--', '#fbbf24')}
+                            ${stat('Alerts', totalAlerts, totalAlerts > 0 ? '#f87171' : '#4ade80')}
+                            ${stat('Eff. Δ', effDeltaStr, effColor)}
+                        </div>
+                        ${(d.highlights && d.highlights.length) ? `
+                        <div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:3px;">Shift Highlights</div>
+                        <div style="margin-bottom:10px;">${list(d.highlights, '◆', 'var(--accent)')}</div>` : ''}
+                        ${(d.follow_ups && d.follow_ups.length) ? `
+                        <div style="background:var(--ai-think-bg);border:1px solid var(--ai-bubble-bd);border-radius:8px;padding:8px 10px;">
+                            <div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:3px;">Recommended Follow-ups</div>
+                            ${list(d.follow_ups, '→', '#fbbf24')}
+                        </div>` : ''}
+                    </div>
+                    <div style="padding:7px 16px;background:var(--ai-chip-bg);border-top:1px solid var(--ai-bubble-bd);font-size:10px;color:var(--tx-muted);">
+                        Shift window: ${d.shift_duration || '--'} • Generated by Nexus AI • ${ts}
+                    </div>
+                </div>
+            `;
+        }
+
+        // ---- What-If Simulator Card ----
+        function buildWhatIfCard(d) {
+            const riskColors = { low: '#22c55e', medium: '#f59e0b', high: '#f97316', critical: '#ef4444' };
+            const risk = (d.risk_level || 'medium').toLowerCase();
+            const rc = riskColors[risk] || '#f59e0b';
+
+            const steps = (d.steps || []).map((s, i) => `
+                <div style="display:flex;gap:10px;padding:5px 0;">
+                    <div style="flex-shrink:0;width:20px;height:20px;border-radius:50%;background:var(--ai-user-bg);border:1px solid var(--accent);color:#fbbf24;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:1px;">${s.step || i + 1}</div>
+                    <div style="font-size:11.5px;line-height:1.5;">
+                        <span style="color:var(--accent-text);font-weight:600;">${formatRich(String(s.event || ''))}</span>
+                        ${s.consequence ? `<br><span style="color:var(--tx-secondary);">→ ${formatRich(String(s.consequence))}</span>` : ''}
+                    </div>
+                </div>`).join('');
+
+            const actions = (d.operator_actions || []).map(a => `
+                <div style="display:flex;gap:7px;font-size:11.5px;color:var(--tx-label);line-height:1.5;padding:2px 0;">
+                    <span style="color:#fbbf24;flex-shrink:0;">→</span><span>${formatRich(String(a))}</span>
+                </div>`).join('');
+
+            return `
+                <div style="background:var(--bg-ai);border-radius:12px 12px 12px 4px;overflow:hidden;border:1px solid var(--ai-bubble-bd);box-shadow:0 10px 25px -5px rgba(0,0,0,0.5);">
+                    <div style="padding:12px 16px;border-bottom:1px solid var(--ai-bubble-bd);background:var(--ai-chip-bg);display:flex;align-items:center;justify-content:space-between;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <i class="fa-solid fa-flask" style="color:#fbbf24;font-size:13px;"></i>
+                            <span style="font-weight:700;color:var(--accent-text);font-size:13px;">What-If Simulation</span>
+                        </div>
+                        <span style="background:${rc};color:#09090b;font-size:9px;padding:2px 9px;border-radius:10px;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;">${risk} risk</span>
+                    </div>
+                    <div style="padding:12px 16px;">
+                        ${d.scenario ? `<p style="font-size:11px;color:var(--tx-muted);font-style:italic;margin-bottom:8px;">Scenario: ${formatRich(String(d.scenario))}</p>` : ''}
+                        ${d.summary ? `<p style="font-size:12px;color:var(--tx-label);line-height:1.6;margin-bottom:10px;">${formatRich(String(d.summary))}</p>` : ''}
+                        ${steps ? `
+                        <div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:3px;">Consequence Chain</div>
+                        <div style="margin-bottom:10px;">${steps}</div>` : ''}
+                        ${actions ? `
+                        <div style="background:var(--ai-think-bg);border:1px solid var(--ai-bubble-bd);border-radius:8px;padding:8px 10px;">
+                            <div style="font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;font-weight:700;margin-bottom:3px;">Operator Actions</div>
+                            ${actions}
+                        </div>` : ''}
+                    </div>
+                    <div style="padding:7px 16px;background:var(--ai-chip-bg);border-top:1px solid var(--ai-bubble-bd);font-size:10px;color:var(--tx-muted);">
+                        Simulated from live telemetry • Nexus AI • ${new Date().toLocaleTimeString()}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Update the AI status badge
+        function updateAiStatus(status) {
+            const badge = document.getElementById('ai-online-badge');
+            const text = document.getElementById('ai-status-text');
+            if (status === 'analyzing') {
+                badge.innerHTML = `
+                    <i class="fa-solid fa-spinner fa-spin text-[10px] text-amber-300"></i>
+                    <span class="text-[11px] text-amber-200 font-medium">Analyzing</span>
+                `;
+            } else {
+                badge.innerHTML = `
+                    <span class="relative flex h-2 w-2">
+                        <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 pulse-dot"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
+                    </span>
+                    <span id="ai-status-text" class="text-[11px] font-medium" style="color:var(--tx-primary);">Online</span>
+                `;
+            }
+        }
+
+        // ---- Zenith-style Incident Diagnosis Card ----
+        function buildDiagnosisCard(data) {
+            const ts = new Date().toLocaleTimeString();
+            const severityConfig = {
+                'critical': { badgeBg: '#ef4444' },
+                'high':     { badgeBg: '#f97316' },
+                'warning':  { badgeBg: '#f59e0b' },
+                'medium':   { badgeBg: '#eab308' },
+                'low':      { badgeBg: '#3b82f6' },
+                'normal':   { badgeBg: '#22c55e' },
+            };
+            const severity = (data.severity || 'warning').toLowerCase();
+            const sc = severityConfig[severity] || severityConfig['warning'];
+
+            aiChatWoCount++;
+
+            // Deviated sensors
+            let sensorsHtml = '';
+            if (data.deviated_sensors && data.deviated_sensors.length > 0) {
+                sensorsHtml = data.deviated_sensors.map(s => {
+                    const sev = (s.severity || severity).toLowerCase();
+                    const ssc = severityConfig[sev] || sc;
+                    return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--tx-secondary);padding:3px 0;">
+                        <span style="background:${ssc.badgeBg};color:#fff;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:700;text-transform:capitalize;">${sev}</span>
+                        <span style="color:var(--tx-primary);">${s.sensor || s.tag || 'Unknown'}</span>
+                        <span style="color:var(--tx-muted);">•</span>
+                        <span style="font-weight:600;color:var(--tx-primary);">${s.value || '--'}</span>
+                        ${s.baseline ? `<span style="color:var(--tx-secondary);font-size:10px;">(baseline: ${s.baseline})</span>` : ''}
+                    </div>`;
+                }).join('');
+            }
+
+            return `
+                <div style="background:var(--bg-surface);border-radius:12px 12px 12px 4px;overflow:hidden;border:1px solid var(--bd-card);box-shadow:0 10px 25px -5px rgba(0,0,0,0.15), 0 8px 10px -6px rgba(0,0,0,0.08);">
+                    <!-- WO Header -->
+                    <div style="padding:12px 16px;border-bottom:1px solid var(--bd-card);background:var(--bg-elevated);">
+                        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                            <i class="fa-solid fa-circle-check" style="color:#10b981;font-size:14px;"></i>
+                            <span style="font-weight:700;color:var(--tx-primary);font-size:13px;">WO-${aiChatWoCount} created</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <span style="background:${sc.badgeBg};color:#fff;font-size:9px;padding:2px 8px;border-radius:10px;font-weight:700;text-transform:capitalize;">${severity}</span>
+                            <span style="color:var(--tx-muted);font-size:10px;">AI-generated • ${ts}</span>
+                        </div>
+                    </div>
+
+                    <!-- Body -->
+                    <div style="padding:12px 16px;font-size:12px;color:var(--tx-label);line-height:1.6;">
+                        <div style="font-weight:600;margin-bottom:4px;color:var(--tx-primary);">${data.probable_cause || 'Boiler Anomaly'}</div>
+                        ${data.explanation ? `<p style="color:var(--tx-secondary);margin-bottom:8px;">${data.explanation}</p>` : ''}
+
+                        ${data.pattern_note ? `
+                        <div style="display:flex;gap:8px;background:var(--pattern-bg);border:1px solid var(--pattern-bd);border-radius:8px;padding:8px 10px;margin-bottom:8px;font-size:11.5px;color:var(--pattern-tx);line-height:1.5;">
+                            <i class="fa-solid fa-rotate" style="color:var(--pattern-icon);font-size:11px;margin-top:2px;flex-shrink:0;"></i>
+                            <span><span style="font-weight:700;color:var(--pattern-label);">Pattern detected:</span> ${data.pattern_note}</span>
+                        </div>` : ''}
+
+                        ${sensorsHtml ? `
+                        <div style="margin-top:6px;">
+                            ${sensorsHtml}
+                        </div>` : ''}
+
+                        ${data.recommended_action ? `
+                        <div style="background:var(--bg-elevated);border:1px solid var(--bd-inner);border-radius:8px;padding:8px 10px;margin-top:8px;">
+                            <div style="font-size:9px;color:var(--tx-secondary);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;margin-bottom:2px;">Recommended Action</div>
+                            <p style="color:var(--tx-primary);font-size:12px;">${data.recommended_action}</p>
+                        </div>` : ''}
+                    </div>
+
+                    <!-- Footer -->
+                    <div style="padding:8px 16px;background:var(--bg-elevated);border-top:1px solid var(--bd-card);font-size:10px;color:var(--tx-muted);">
+                        Assigned: Maintenance Team • Synced to CMMS ✓
+                    </div>
+                </div>
+            `;
+        }
+
+        // ---- Zenith-style Asset Flag Card ----
+        function buildAssetFlagCard(data) {
+            const severityBadge = {
+                'critical': '#ef4444',
+                'high': '#f97316',
+                'warning': '#f59e0b',
+                'overdue': '#ef4444',
+                'medium': '#eab308',
+            };
+
+            let flagsHtml = '';
+            if (data.flagged_assets && data.flagged_assets.length > 0) {
+                flagsHtml = data.flagged_assets.map(a => {
+                    const badge = severityBadge[(a.severity || 'warning').toLowerCase()] || '#f59e0b';
+                    return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--tx-secondary);padding:3px 0;">
+                        <span style="background:${badge};color:#fff;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:700;text-transform:capitalize;">${a.severity}</span>
+                        <span style="font-weight:600;color:var(--tx-primary);">${a.name}</span>
+                        <span style="color:var(--tx-muted);">•</span>
+                        <span style="color:var(--tx-label);">${a.detail}</span>
+                    </div>`;
+                }).join('');
+            }
+
+            return `
+                <div style="background:var(--bg-surface);border-radius:12px 12px 12px 4px;padding:14px 16px;border:1px solid var(--bd-card);box-shadow:0 10px 25px -5px rgba(0,0,0,0.15), 0 8px 10px -6px rgba(0,0,0,0.08);">
+                    <p style="color:var(--tx-primary);font-size:13px;font-weight:600;margin-bottom:8px;">${data.flagged_assets ? data.flagged_assets.length : 0} assets flagged:</p>
+                    <div style="display:flex;flex-direction:column;gap:2px;">${flagsHtml}</div>
+                    <p style="color:var(--tx-muted);font-size:10px;margin-top:8px;">Nexus AI • ${new Date().toLocaleTimeString()}</p>
+                </div>
+            `;
+        }
+
+        function handleDiagnosis(data) {
+            removeAiThinking();
+
+            if (data.type === 'asset_flags') {
+                addAiMessage(buildAssetFlagCard(data));
+            } else {
+                addAiMessage(buildDiagnosisCard(data));
+            }
+        }
+
+        function sendChatMessage() {
+            const input = document.getElementById('ai-chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+            addUserMessage(text);
+            input.value = '';
+
+            // Publish user question to MQTT for the AI analyst service to pick up
+            const chatPayload = JSON.stringify({
+                question: text,
+                timestamp: new Date().toISOString()
+            });
+            client.publish('factory/pumphouse4/boiler/unit01/ai/question', chatPayload);
+
+            // Show thinking state
+            addAiThinking();
+        }
+
+        // Enter key to send
+        document.getElementById('ai-chat-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+
+        // ============================================================
+        // THEME TOGGLE
+        // ============================================================
+        function toggleTheme() {
+            const isLight = document.body.classList.toggle('light');
+            localStorage.setItem('nexus-theme', isLight ? 'light' : 'dark');
+            applyThemeColors(isLight);
+        }
+
+        function applyThemeColors(isLight) {
+            const h1 = document.querySelector('h1');
+            if (h1) h1.style.color = isLight ? '#1c1410' : '#fef3c7';
+
+            // Chart grid + tick colors
+            const gridColor = isLight ? '#e8ddd4' : '#2d3748';
+            const tickColor = isLight ? '#9c8878' : '#94a3b8';
+            [charts.performance, charts.divergence, charts.anomaly, charts.scatter].forEach(c => {
+                c.options.scales && Object.values(c.options.scales).forEach(ax => {
+                    if (ax.grid) ax.grid.color = gridColor;
+                    if (ax.ticks) ax.ticks.color = tickColor;
+                });
+                c.update('none');
+            });
+        }
+
+        // Restore saved theme on load
+        (function() {
+            const saved = localStorage.getItem('nexus-theme');
+            if (saved === 'light') {
+                document.body.classList.add('light');
+                applyThemeColors(true);
+            }
+        })();
+
+        // ============================================================
+        // CHIP SCROLL — arrow buttons + hover peek
+        // ============================================================
+        function scrollChips(dir) {
+            const el = document.getElementById('chips-scroll');
+            el.scrollBy({ left: dir * 140, behavior: 'smooth' });
+            setTimeout(updateChipArrows, 320);
+        }
+
+        function updateChipArrows() {
+            const el = document.getElementById('chips-scroll');
+            if (!el) return;
+            const hasOverflow = el.scrollWidth > el.clientWidth + 4;
+            const atStart = el.scrollLeft <= 4;
+            const atEnd = el.scrollLeft >= el.scrollWidth - el.clientWidth - 4;
+            const leftBtn = document.getElementById('chips-left-btn');
+            const rightBtn = document.getElementById('chips-right-btn');
+            const fade = document.getElementById('chips-right-fade');
+
+            leftBtn.style.display = !atStart ? 'flex' : 'none';
+            rightBtn.style.display = (hasOverflow && !atEnd) ? 'flex' : 'none';
+            fade.style.opacity = (hasOverflow && !atEnd) ? '1' : '0';
+        }
+
+        // Hover peek — on enter, gently slide right to reveal hidden chips;
+        // on leave, snap back only if user hasn't manually scrolled past the peek point
+        let chipsPeekTimer = null;
+        const chipsOuter = document.getElementById('chips-outer');
+        const chipsScroll = document.getElementById('chips-scroll');
+
+        chipsOuter.addEventListener('mouseenter', () => {
+            const hasOverflow = chipsScroll.scrollWidth > chipsScroll.clientWidth + 4;
+            if (!hasOverflow || chipsScroll.scrollLeft > 4) return;
+            chipsPeekTimer = setTimeout(() => {
+                chipsScroll.scrollBy({ left: 100, behavior: 'smooth' });
+                setTimeout(updateChipArrows, 350);
+            }, 220);
+        });
+
+        chipsOuter.addEventListener('mouseleave', () => {
+            clearTimeout(chipsPeekTimer);
+            if (chipsScroll.scrollLeft <= 110) {
+                chipsScroll.scrollTo({ left: 0, behavior: 'smooth' });
+                setTimeout(updateChipArrows, 350);
+            }
+        });
+
+        setTimeout(updateChipArrows, 400);
+    </script>
+</body>
+
+</html>

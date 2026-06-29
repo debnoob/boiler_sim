@@ -1,0 +1,168 @@
+export interface TelemetryTags {
+  steam_pressure: number;
+  steam_temperature: number;
+  steam_flow: number;
+  drum_level: number;
+  feedwater_flow: number;
+  feedwater_temp: number;
+  fuel_flow: number;
+  air_flow: number;
+  o2_percent: number;
+  flue_gas_temp: number;
+  tube_health: number;
+  efficiency: number;
+  heat_rate: number;
+  flame_status: number;
+  safety_valve: number;
+}
+
+export interface ControlState {
+  autopilot: boolean;
+  o2_setpoint: number;
+  pressure_setpoint: number;
+  degradation_rate_factor: number;
+  firing_reduction_pct: number;
+  soot_blows: number;
+}
+
+export interface HeartbeatPayload {
+  timestamp: number;
+  tags: TelemetryTags;
+  degradation_factor: number;
+  mode: string;
+  control?: ControlState;
+}
+
+export interface ControlActionPayload {
+  type: 'control_action';
+  headline: string;
+  timestamp: string;
+  setpoints: { o2_percent: number; steam_pressure_bar: number };
+  firing_reduction_pct: number;
+  degradation_slope_reduction_pct: number;
+  soot_blow: boolean;
+  reason: string;
+  before: { flue_gas_temp: number; tube_health: number; efficiency: number; fuel_flow: number };
+  commands: string[];
+}
+
+export interface AnomalyPayload {
+  score: number;
+  is_anomaly: boolean;
+  timestamp: number;
+}
+
+export interface AlertPayload {
+  severity: 'CRITICAL' | 'HIGH' | 'WARNING' | 'LOW';
+  message: string;
+  tag: string;
+  value: number;
+  threshold: number;
+  timestamp: string;
+}
+
+export interface DeviatedSensor {
+  sensor: string;
+  tag?: string;
+  value: number | string;
+  baseline?: number | string;
+  severity: string;
+}
+
+export interface DiagnosisPayload {
+  type?: string;
+  probable_cause?: string;
+  severity: string;
+  explanation?: string;
+  recommended_action?: string;
+  confidence?: number;
+  pattern_note?: string | null;
+  deviated_sensors?: DeviatedSensor[];
+  flagged_assets?: Array<{ name: string; severity: string; detail: string }>;
+}
+
+export interface AiResponsePayload {
+  type?: 'shift_report' | 'what_if' | 'chat';
+  answer?: string;
+  response?: string;
+  summary?: string;
+  uptime_pct?: number;
+  anomaly_events?: number;
+  alerts?: Record<string, number>;
+  efficiency?: { start?: number; end?: number };
+  overall_status?: string;
+  highlights?: string[];
+  follow_ups?: string[];
+  shift_duration?: string;
+  scenario?: string;
+  risk_level?: string;
+  steps?: Array<{ step?: number; event?: string; consequence?: string }>;
+  operator_actions?: string[];
+}
+
+export interface StreamMessage {
+  id: string;
+  text: string;
+  color: 'emerald' | 'amber' | 'red';
+  timestamp: string;
+}
+
+export interface AlertEvent {
+  id: string;
+  severity: 'CRITICAL' | 'HIGH' | 'WARNING' | 'LOW';
+  message: string;
+  tag: string;
+  value: number;
+  timestamp: string;
+}
+
+export type ChatMessageType = 'ai' | 'user' | 'thinking' | 'diagnosis' | 'shift_report' | 'what_if';
+
+export interface ChatMessage {
+  id: string;
+  type: ChatMessageType;
+  content: string;
+  timestamp: string;
+  data?: DiagnosisPayload | AiResponsePayload;
+}
+
+export interface HealthPoint {
+  t: number;
+  v: number;
+}
+
+// ── Moirai 2.0 Forecast ─────────────────────────────────────
+export interface ForecastMetric {
+  history: number[];
+  p10: number[];
+  p50: number[];
+  p90: number[];
+}
+
+export interface MoiraiForecastPayload {
+  timestamp: number;
+  horizon_seconds: number;
+  backend: string;
+  metrics: {
+    tube_health?: ForecastMetric;
+    efficiency?: ForecastMetric;
+    steam_pressure?: ForecastMetric;
+  };
+  projected_breach_eta: number | null; // seconds from now, or null
+}
+
+export type MqttConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+export type AiStatus = 'online' | 'analyzing';
+export type OperatingMode = 'NORMAL' | 'DEGRADING' | 'CRITICAL' | 'FAULT';
+
+export interface InterventionEvent {
+  heartbeatCountAtDetection: number;
+  arrLengthAtDetection: number;
+  timestamp: string;
+  fuelFlowBefore: number;
+  fuelFlowReduction: number;   // percent
+  efficiencyAtEvent: number;
+  flueGasTempAtEvent: number;
+  label: string;
+  forecastDeadlineAtDetection: number | null;  // seconds timestamp
+}

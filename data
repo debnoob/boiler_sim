@@ -1,0 +1,159 @@
+Oxmaint
+OPC-UA    → Big DCS systems (Siemens, ABB, Honeywell)
+MQTT      → Modern IIoT, Edge devices, Sensors
+
+IEC 62443-3-3 (Industrial Cybersecurity):
+"Critical assets shall not transmit data to external networks"
+✅ Your solution: 100% on-premise
+
+NIST Cybersecurity Framework:
+"Protective Technology - Data security aligned with risk"
+✅ Your solution: Data never leaves OT network
+
+Insurance Requirements:
+"AI systems processing OT data must be air-gapped"
+✅ Your solution: Physically isolated Edge AI
+
+ Good news on the open-source constraint — everything I'm about to recommend is
+  free and open source (MIT/Apache licensed), and your data never touches a
+  cloud API. Here's how I'd move forward.
+
+  The key design decision that makes your hardware enough
+
+  Your 2GB GPU is too small to matter — modern local LLM runners need ~3GB+ VRAM
+  even for small quantized models, so plan for CPU-only inference. That sounds
+  bad, but it's fine because of one architectural choice:
+
+  Don't ask the LLM to detect anything. Your Isolation Forest already does the
+  math — the LLM is the explainer. It turns numbers into language. That means it
+  only runs when an anomaly fires (event-driven, not every second), and it only
+  generates short outputs (a paragraph, a JSON card). A 3–4B model on CPU does
+  10–25 tokens/sec, which is completely acceptable for a card that appears 5–10
+  seconds after an alarm. This is exactly how products like Oxmaint structure it
+  too — deterministic detection, generative explanation.
+
+  Recommended stack (all free/open source)
+
+  - Ollama (MIT license) as the model runner — one binary, local REST API at
+  localhost:11434, defaults to Q4 quantization automatically.
+  - Model: Qwen3 4B or Phi-4-mini (3.8B) — the two consistently top-rated picks
+  for 8GB RAM CPU inference in 2026. Both ~2.5GB on disk, ~3GB RAM at runtime,
+  leaving room for your MQTT broker and Python processes. Fallback if RAM gets
+  tight: Llama 3.2 3B or Qwen3 1.7B.
+  - A small Python "AI analyst" service — sits next to your existing
+  anomaly_detector.py, subscribes to the anomaly topic, calls Ollama, publishes
+  the result to a new MQTT topic like .../ai/diagnosis. Your dashboard already
+  speaks MQTT over websockets, so rendering it is just one more subscription. No
+  new infrastructure.
+
+  What to build for the demo — in pitch order
+
+  1. AI Incident Cards (build this first — it's the wow moment).
+  When anomaly_score crosses threshold, your analyst service assembles a
+  structured snapshot: which sensors deviated, by how much vs. the rolling
+  baseline, trend direction over the last 60s, current operating mode. It sends
+  that to the LLM with a prompt like "You are a boiler maintenance engineer.
+  Given this telemetry, give probable cause, severity, and recommended action as
+  JSON." Ollama supports forced-JSON output, so the dashboard renders a clean
+  card: 🔴 "Drum level falling while feedwater flow is normal — consistent with
+  a drum level transmitter drift or tube leak. Recommend visual inspection of
+  sight glass within 2 hours." Your fault-injection feature in boiler_engine.py
+  is the perfect demo trigger — inject the fault live, card appears 10 seconds
+  later.
+
+  Don't ask the LLM to detect anything. Your Isolation Forest already does the math — the LLM is the explainer. It turns numbers into language. That means it only runs when an anomaly fires (event-driven, not every second), and it only
+  generates short outputs (a paragraph, a JSON card). A 3–4B model on CPU does 10–25 tokens/sec, which is completely acceptable for a card that appears 5–10 seconds after an alarm. This is exactly how products like Oxmaint structure it
+  too — deterministic detection, generative explanation.
+
+  Recommended stack (all free/open source)
+
+  - Ollama (MIT license) as the model runner — one binary, local REST API at localhost:11434, defaults to Q4 quantization automatically.
+  - Model: Qwen3 4B or Phi-4-mini (3.8B) — the two consistently top-rated picks for 8GB RAM CPU inference in 2026. Both ~2.5GB on disk, ~3GB RAM at runtime, leaving room for your MQTT broker and Python processes. Fallback if RAM gets
+  tight: Llama 3.2 3B or Qwen3 1.7B.
+  - A small Python "AI analyst" service — sits next to your existing anomaly_detector.py, subscribes to the anomaly topic, calls Ollama, publishes the result to a new MQTT topic like .../ai/diagnosis. Your dashboard already speaks MQTT
+  over websockets, so rendering it is just one more subscription. No new infrastructure.
+
+  What to build for the demo — in pitch order
+
+  1. AI Incident Cards (build this first — it's the wow moment).
+  When anomaly_score crosses threshold, your analyst service assembles a structured snapshot: which sensors deviated, by how much vs. the rolling baseline, trend direction over the last 60s, current operating mode. It sends that to the
+  LLM with a prompt like "You are a boiler maintenance engineer. Given this telemetry, give probable cause, severity, and recommended action as JSON." Ollama supports forced-JSON output, so the dashboard renders a clean card: 🔴 "Drum
+  level falling while feedwater flow is normal — consistent with a drum level transmitter drift or tube leak. Recommend visual inspection of sight glass within 2 hours." Your fault-injection feature in boiler_engine.py is the perfect demo
+  trigger — inject the fault live, card appears 10 seconds later.
+
+  2. "Ask the plant" chat panel.
+  A chat box on the dashboard where the boss types "why is efficiency down?" and the LLM answers using the last N minutes of telemetry stuffed into the prompt. Small models handle this well because you're giving them all the facts — they
+  just summarize.
+
+  3. End-of-shift summary.
+  One button: LLM generates a shift report — uptime, anomaly count, efficiency trend, recommended follow-ups. Bosses love auto-generated reports; it's also the cheapest feature to build.
+
+  4. (Stretch) Manual-aware diagnosis — mini RAG.
+  Drop the boiler's maintenance manual PDF into a local vector store (sqlite-vec or ChromaDB, both open source, with Ollama's free nomic-embed-text for embeddings). The incident card then cites the actual manual section: "Per manual §4.2,
+  low drum level with normal feedwater indicates..." This is the feature that makes it look like a real product instead of a demo.
+
+  The pitch framing for your boss
+
+  Three lines that sell it:
+
+  1. "Zero data leaves the building." The model runs air-gapped on this machine — no telemetry, no prompts, nothing goes to OpenAI/Anthropic/anyone. For industrial data that's a compliance feature, not a limitation.
+  2. "Zero license cost." Ollama, Qwen/Phi, Mosquitto, scikit-learn — the entire stack is free. The only cost to scale up is hardware.
+  3. "This architecture scales." Today: 4B model on a laptop explaining one boiler. Same exact code with a $1,500 GPU box: a 30B model covering the whole plant. The demo de-risks the architecture before anyone spends money.
+
+  Practical tips so the demo doesn't embarrass you
+
+  - Set temperature: 0.2 and force JSON output — you want consistent, boring, correct cards, not creativity.
+  - Keep prompts under ~1,000 tokens — prompt processing on CPU is the slow part, more than generation.
+  - Debounce: one diagnosis per anomaly event, not per message, and show a "AI analyzing…" spinner on the dashboard so latency reads as intentional.
+  - Pre-pull and warm the model before the demo (ollama run qwen3:4b once) — first load from disk takes ~30s cold.
+  - Close Chrome tabs during the demo — on 8GB, the browser is your real RAM competitor.
+
+  Sources: Local AI Master — best models for 8GB RAM, Small Language Models 2026 guide, Ollama VRAM requirements, SitePoint local LLM comparison 2026
+
+ All changes are in and verified — the Python compiles and the inline JS passes
+  a node --check. The Groq key stays hardcoded as you asked.
+
+  What the chat panel does now
+
+  New client-facing features (frontend + backend):
+
+  - Quick-prompt chips above the input — ⚡ Health check, 📉 Efficiency, 🔮
+  Predict failure, 🧰 Priorities, 📋 Shift report. One click sends a
+  - One-click End-of-Shift Report (roadmap item 3, now done). The backend tracks
+  real shift stats — uptime %, anomaly events, alert counts by severity,
+  efficiency start/end/min/max — and the LLM only writes the narrative,
+  highlights, and follow-ups on top of those ground-truth numbers. The dashboard
+  renders it as a dedicated report card with a good/fair/poor status badge and
+  a 4-stat grid (Uptime, Anomalies, Alerts, Efficiency Δ).
+  - Typewriter streaming effect — answers now type out live with a blinking
+  amber cursor instead of appearing as a block. Reads like the model is thinking
+  on stage.
+  - Sensor-value highlighting — numbers with units (10.2 bar, 198°C, 87%,
+  kg/hr…) are auto-highlighted in amber inside answers, and **bold** from the
+  model renders properly.
+  - Smarter "thinking" indicator — rotates through phases ("Reading last 60s of
+  live telemetry…", "Correlating sensor deviations…", "Reasoning with Llama 3.3
+  70B…") instead of a static spinner.
+  - Conversation memory — the analyst keeps the last 3 Q&A pairs in context, so
+  follow-ups like "and what about the drum level?" now work.
+
+  Chatbot card UI/UX: the card is now wrapped in a thin rotating conic-gradient
+  ring (dark amber → bright gold) with a slow breathing glow, plus an animated
+  shimmer line under the header. It clearly reads as the AI element on the page,
+  but everything uses the existing #a16207/#fbbf24 amber palette, so it blends
+  with the Live Tags card and header branding rather than fighting them.
+
+  To test
+
+  Restart ai_analyst.py, reload the dashboard, and click the 📋 Shift report
+  chip — note the report's stats only start accumulating from when the service
+  boots, so let it run a few minutes (ideally inject a fault) for an interesting
+  report.
+
+  Ideas I didn't implement but that would demo well next: RAG citations from the
+  boiler manual inside incident cards (roadmap item 4), a "replay last
+  incident" button that re-narrates the timeline, and text-to-speech for
+  critical diagnoses. One caution: that Groq key has now been in a few
+  files/chats — fine for testing, but rotate it before any client sees the repo.
+
+

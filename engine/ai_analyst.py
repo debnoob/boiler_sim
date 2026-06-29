@@ -1,0 +1,1092 @@
+"""
+NEXUS OS — AI Analyst Service
+Connects to local Ollama server.
+
+Ollama usage:
+    export OLLAMA_MODEL=llama3.2:3b    # or any model you have pulled
+    python engine/ai_analyst.py
+"""
+
+import paho.mqtt.client as mqtt
+import json
+import os
+import time
+import uuid
+import requests
+from collections import deque
+from threading import Lock
+from dotenv import load_dotenv
+load_dotenv()
+
+# Deterministic pre-analysis layer — must import after load_dotenv
+from deterministic_analyst import (
+    build_physics_brief,
+    format_brief_for_llm,
+    HYPOTHESIS_LABELS,
+)
+
+# ============================================================
+# RAG CONFIG
+# ============================================================
+RAG_SERVER_URL = os.environ.get("RAG_SERVER_URL", "http://localhost:8001")
+RAG_TOP_K = 4
+
+
+def rag_retrieve(query: str) -> str:
+    """Query the RAG server and return formatted context chunks, or empty string on failure."""
+    try:
+        resp = requests.post(
+            f"{RAG_SERVER_URL}/api/search",
+            json={"query": query, "top_k": RAG_TOP_K},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return ""
+        results = resp.json().get("results", [])
+        if not results:
+            return ""
+        parts = []
+        for i, r in enumerate(results, 1):
+            src = r.get("filename", "manual")
+            parts.append(f"[Excerpt {i} — {src}]\n{r['text']}")
+        return "\n\n".join(parts)
+    except Exception:
+        return ""
+
+# ============================================================
+# CONFIG
+# ============================================================
+BROKER = "localhost"
+PORT   = 1883
+
+# Ollama settings
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "my-boilerSim3:latest")
+OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/chat"
+OLLAMA_NUM_CTX  = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
+
+# MQTT Topics
+TOPIC_HEARTBEAT = "factory/pumphouse4/boiler/unit01/system/heartbeat"
+TOPIC_ANOMALY = "factory/pumphouse4/boiler/unit01/ai/anomaly_score"
+TOPIC_ALERTS = "factory/pumphouse4/boiler/unit01/alerts"
+TOPIC_CHAT_IN = "factory/pumphouse4/boiler/unit01/ai/question"
+TOPIC_CHAT_OUT = "factory/pumphouse4/boiler/unit01/ai/response"
+TOPIC_DIAGNOSIS = "factory/pumphouse4/boiler/unit01/ai/diagnosis"
+TOPIC_AI_STATUS = "factory/pumphouse4/boiler/unit01/ai/status"
+
+# Closed-loop autonomous control
+TOPIC_CONTROL_CMD    = "factory/pumphouse4/boiler/control/setpoint"      # AI → engine command bus
+TOPIC_CONTROL_ACTION = "factory/pumphouse4/boiler/unit01/ai/control_action"  # AI → dashboard console
+
+# Debounce: one diagnosis per anomaly event
+DIAGNOSIS_COOLDOWN = 30  # seconds between diagnoses
+
+BASELINES = {
+    "steam_pressure": 10.0,
+    "steam_temperature": 180.0,
+    "steam_flow": 2300.0,
+    "drum_level": 400.0,
+    "feedwater_flow": 2300.0,
+    "feedwater_temp": 95.0,
+    "fuel_flow": 138.0,
+    "air_flow": 1518.0,
+    "o2_percent": 3.2,
+    "flue_gas_temp": 198.0,
+    "tube_health": 97.0,
+    "efficiency": 87.0,
+}
+
+THRESHOLDS = {
+    "steam_pressure_high": 13.0,
+    "steam_pressure_trip": 13.5,
+    "drum_level_low": 280.0,
+    "drum_level_critical": 200.0,
+    "flue_gas_temp_high": 240.0,
+    "o2_percent_high": 5.5,
+    "o2_percent_low": 2.0,
+    "tube_health_inspect": 70.0,
+}
+
+OPTIMAL = {
+    "o2_percent_low": 2.0,
+    "o2_percent_high": 4.0,
+    "air_fuel_ratio": 11.0,
+}
+
+
+def _as_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+# ============================================================
+# TELEMETRY RING BUFFER (last N minutes of context)
+# ============================================================
+class TelemetryBuffer:
+    def __init__(self, max_samples=120):
+        self.buffer = deque(maxlen=max_samples)
+        self.lock = Lock()
+        self.latest = None
+
+    def add(self, reading):
+        with self.lock:
+            self.buffer.append(reading)
+            self.latest = reading
+
+    def get_context(self, last_n=30):
+        """Get last N readings as context string for prompt injection."""
+        with self.lock:
+            samples = list(self.buffer)[-last_n:]
+        if not samples:
+            return "No telemetry data available yet."
+
+        lines = []
+        for s in samples:
+            tags = s.get("tags", {})
+            ts = s.get("timestamp", "?")
+            line = (
+                f"[{ts}] P={tags.get('steam_pressure','?')} bar, "
+                f"T={tags.get('steam_temperature','?')}°C, "
+                f"Drum={tags.get('drum_level','?')}mm, "
+                f"Fuel={tags.get('fuel_flow','?')} m³/hr, "
+                f"FGT={tags.get('flue_gas_temp','?')}°C, "
+                f"O2={tags.get('o2_percent','?')}%, "
+                f"Eff={tags.get('efficiency','?')}%, "
+                f"Tube={tags.get('tube_health','?')}%, "
+                f"Flame={'ON' if tags.get('flame_status',1) else 'OFF'}, "
+                f"Mode={s.get('mode','NORMAL')}"
+            )
+            lines.append(line)
+        return "\n".join(lines)
+
+    def get_latest_summary(self):
+        """Get a concise summary of the latest reading."""
+        with self.lock:
+            if not self.latest:
+                return "No data available."
+            tags = self.latest.get("tags", {})
+            mode = self.latest.get("mode", "NORMAL")
+            deg = self.latest.get("degradation_factor", 0)
+
+        return (
+            f"Mode: {mode} | Degradation: {deg:.3f}\n"
+            f"Steam Pressure: {tags.get('steam_pressure','?')} bar\n"
+            f"Steam Temperature: {tags.get('steam_temperature','?')} °C\n"
+            f"Steam Flow: {tags.get('steam_flow','?')} kg/hr\n"
+            f"Drum Level: {tags.get('drum_level','?')} mm\n"
+            f"Feedwater Flow: {tags.get('feedwater_flow','?')} kg/hr\n"
+            f"Feedwater Temp: {tags.get('feedwater_temp','?')} °C\n"
+            f"Fuel Flow: {tags.get('fuel_flow','?')} m³/hr\n"
+            f"Air Flow: {tags.get('air_flow','?')} m³/hr\n"
+            f"O₂: {tags.get('o2_percent','?')} %\n"
+            f"Flue Gas Temp: {tags.get('flue_gas_temp','?')} °C\n"
+            f"Tube Health: {tags.get('tube_health','?')} %\n"
+            f"Efficiency: {tags.get('efficiency','?')} %\n"
+            f"Flame: {'ON' if tags.get('flame_status',1) else 'OFF'}\n"
+            f"Safety Valve: {'OPEN' if tags.get('safety_valve',0) else 'CLOSED'}"
+        )
+
+    def get_recent_samples(self, last_n=30):
+        with self.lock:
+            return list(self.buffer)[-last_n:]
+
+
+# ============================================================
+# SHIFT STATISTICS (feeds the end-of-shift report)
+# ============================================================
+class ShiftStats:
+    def __init__(self):
+        self.lock = Lock()
+        self.start_time = time.time()
+        self.anomaly_events = 0
+        self.alert_counts = {"CRITICAL": 0, "HIGH": 0, "WARNING": 0, "LOW": 0}
+        self.samples = 0
+        self.flame_off_samples = 0
+        self.eff_start = None
+        self.eff_end = None
+        self.eff_min = None
+        self.eff_max = None
+        self.modes_seen = set()
+
+    def record_reading(self, reading):
+        tags = reading.get("tags", {})
+        eff = tags.get("efficiency")
+        with self.lock:
+            self.samples += 1
+            if not tags.get("flame_status", 1):
+                self.flame_off_samples += 1
+            self.modes_seen.add(reading.get("mode", "NORMAL"))
+            if eff is not None:
+                if self.eff_start is None:
+                    self.eff_start = eff
+                self.eff_end = eff
+                self.eff_min = eff if self.eff_min is None else min(self.eff_min, eff)
+                self.eff_max = eff if self.eff_max is None else max(self.eff_max, eff)
+
+    def record_anomaly(self):
+        with self.lock:
+            self.anomaly_events += 1
+
+    def record_alert(self, severity):
+        with self.lock:
+            if severity in self.alert_counts:
+                self.alert_counts[severity] += 1
+
+    def snapshot(self):
+        with self.lock:
+            elapsed = time.time() - self.start_time
+            hours, rem = divmod(int(elapsed), 3600)
+            minutes = rem // 60
+            uptime_pct = 100.0
+            if self.samples > 0:
+                uptime_pct = 100.0 * (1 - self.flame_off_samples / self.samples)
+            return {
+                "shift_duration": f"{hours}h {minutes:02d}m",
+                "uptime_pct": round(uptime_pct, 1),
+                "anomaly_events": self.anomaly_events,
+                "alerts": dict(self.alert_counts),
+                "efficiency": {
+                    "start": self.eff_start,
+                    "end": self.eff_end,
+                    "min": self.eff_min,
+                    "max": self.eff_max,
+                },
+                "modes_seen": sorted(self.modes_seen),
+            }
+
+
+# ============================================================
+# INCIDENT MEMORY (multi-turn incident correlation)
+# ============================================================
+class IncidentMemory:
+    """
+    Session-scoped memory of alert episodes and AI diagnoses.
+    Lets later prompts correlate recurring patterns, e.g.
+    "third flue gas temp spike this session — matches tube fouling,
+    not a one-off transient."
+    """
+
+    ALERT_EPISODE_GAP = 60  # seconds — alert ticks closer than this count as one episode
+
+    def __init__(self, max_incidents=50):
+        self.lock = Lock()
+        self.incidents = deque(maxlen=max_incidents)
+        self._last_alert_seen = {}  # tag -> last time an alert tick was seen
+
+    def record_alert(self, payload):
+        """Record an alert episode (deduplicates the 1 Hz alarm ticks)."""
+        tag = payload.get("tag", "unknown")
+        now = time.time()
+        with self.lock:
+            last = self._last_alert_seen.get(tag, 0)
+            self._last_alert_seen[tag] = now
+            if now - last < self.ALERT_EPISODE_GAP:
+                return  # same continuous episode, already recorded
+            self.incidents.append({
+                "time": time.strftime("%H:%M:%S"),
+                "kind": "ALERT",
+                "tag": tag,
+                "severity": payload.get("severity", "?"),
+                "detail": (
+                    f"{payload.get('message', '')} "
+                    f"({tag}={payload.get('value', '?')}, threshold {payload.get('threshold', '?')})"
+                ),
+            })
+
+    def record_diagnosis(self, diagnosis):
+        with self.lock:
+            self.incidents.append({
+                "time": time.strftime("%H:%M:%S"),
+                "kind": "DIAGNOSIS",
+                "tag": "",
+                "severity": diagnosis.get("severity", "?"),
+                "detail": diagnosis.get("probable_cause", "Unknown cause"),
+            })
+
+    def summary(self):
+        """Compact incident history string for prompt injection."""
+        with self.lock:
+            incidents = list(self.incidents)
+        if not incidents:
+            return "No prior incidents this session."
+
+        lines = [
+            f"- [{i['time']}] {i['kind']} [{i['severity']}]"
+            f"{' ' + i['tag'] if i['tag'] else ''}: {i['detail']}"
+            for i in incidents[-12:]
+        ]
+        tag_counts = {}
+        for i in incidents:
+            if i["kind"] == "ALERT":
+                tag_counts[i["tag"]] = tag_counts.get(i["tag"], 0) + 1
+        out = f"{len(incidents)} incident(s) recorded this session:\n" + "\n".join(lines)
+        recurring = [f"{tag} x{n}" for tag, n in tag_counts.items() if n >= 2]
+        if recurring:
+            out += "\nRecurring alert episodes: " + ", ".join(recurring)
+        return out
+
+
+# ============================================================
+# UNIFIED LLM CLIENT  (Ollama)
+# ============================================================
+def call_llm(messages, json_mode=False, max_tokens=800):
+    """
+    Send a chat completion request to the native Ollama server.
+    Optimized for Intel Mac CPU inference over local Wi-Fi.
+    """
+    url     = OLLAMA_URL
+    headers = {"Content-Type": "application/json"}
+    model   = OLLAMA_MODEL
+    timeout = 90   # Smaller prompts (PhysicsBrief vs raw dump) comfortably fit in 90s
+
+    body = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "keep_alive": "1h",  # Crucial: Keeps model in Mac's RAM between alerts
+        "options": {
+            "temperature": 0.2,
+            "num_predict": max_tokens,
+            "num_ctx": OLLAMA_NUM_CTX
+        }
+    }
+    
+    if json_mode:
+        body["format"] = "json"  # Native Ollama JSON mode
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+            if resp.status_code == 200:
+                # Native Ollama response parsing
+                return resp.json()["message"]["content"]
+            else:
+                print(f"[AI Analyst] Ollama error {resp.status_code}: {resp.text[:200]}")
+                return None
+        except requests.exceptions.Timeout:
+            print(f"[AI Analyst] Timeout (attempt {attempt+1}/3)")
+        except Exception as e:
+            print(f"[AI Analyst] Request error: {e}")
+            return None
+
+    return None
+# ============================================================
+# AI ANALYST SERVICE
+# ============================================================
+class AIAnalyst:
+    def __init__(self):
+        self.telemetry = TelemetryBuffer()
+        self.stats = ShiftStats()
+        self.memory = IncidentMemory()  # session incident log for pattern correlation
+        self.chat_history = deque(maxlen=6)  # last 3 Q&A pairs for follow-up context
+        # Use a unique client ID so a second analyst process or restart does not
+        # kick the existing session off the broker mid-response.
+        client_id = f"nexus_ai_analyst_{uuid.uuid4().hex[:8]}"
+        self.mqtt_client = mqtt.Client(client_id=client_id)
+        self.last_diagnosis_time = 0
+        self.last_anomaly_score = 0
+
+        # ── Autonomous closed-loop controller state ─────────────────────
+        # Deterministic policy (no LLM dependency) so the loop closes reliably.
+        self.autopilot_engaged = False
+        self.fgt_hist = deque(maxlen=12)   # flue gas temp trend
+        self.th_hist  = deque(maxlen=12)   # tube health trend
+        self.last_control_action = 0
+
+    def on_connect(self, client, userdata, flags, rc):
+        if rc == 0:
+            print("[AI Analyst] ✓ Connected to MQTT broker")
+            client.subscribe(TOPIC_HEARTBEAT)
+            client.subscribe(TOPIC_ANOMALY)
+            client.subscribe(TOPIC_ALERTS)
+            client.subscribe(TOPIC_CHAT_IN)
+            print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, and chat topics")
+            # Publish online status
+            client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+        else:
+            print(f"[AI Analyst] ✗ Connection failed: {rc}")
+
+    def on_message(self, client, userdata, msg):
+        try:
+            topic = msg.topic
+            payload = json.loads(msg.payload.decode())
+
+            if topic == TOPIC_HEARTBEAT:
+                self.telemetry.add(payload)
+                self.stats.record_reading(payload)
+                self.evaluate_autonomous_control(payload)
+
+            elif topic == TOPIC_ANOMALY:
+                self.handle_anomaly(payload)
+
+            elif topic == TOPIC_ALERTS:
+                self.handle_alert(payload)
+
+            elif topic == TOPIC_CHAT_IN:
+                self.handle_chat(payload)
+
+        except Exception as e:
+            print(f"[AI Analyst] Message error: {e}")
+
+    # ============================================================
+    # AUTONOMOUS CLOSED-LOOP CONTROLLER
+    # ============================================================
+    def evaluate_autonomous_control(self, payload):
+        """
+        Deterministic policy that watches the degradation signature and, when it
+        develops, autonomously dispatches a corrective control command to the
+        engine — genuinely bending the physics, not just annotating a chart.
+
+        Trigger: tube health falling AND flue-gas temp rising while in a
+        degrading/critical mode. Re-arms once the boiler is healthy again.
+        """
+        tags = payload.get("tags", {})
+        mode = payload.get("mode", "NORMAL")
+        fgt  = tags.get("flue_gas_temp")
+        th   = tags.get("tube_health")
+        if fgt is None or th is None:
+            return
+
+        self.fgt_hist.append(fgt)
+        self.th_hist.append(th)
+
+        # Healthy again → stand down so the AI can act on the next event
+        if mode == "NORMAL":
+            if self.autopilot_engaged:
+                print("[AI Analyst] 🤖 Boiler stable — autopilot standing down.")
+            self.autopilot_engaged = False
+            return
+
+        if self.autopilot_engaged:
+            return
+
+        degrading = mode in ("DEGRADING", "CRITICAL")
+
+        # Fouling signature from the recent trend
+        signature = False
+        if len(self.th_hist) >= 6:
+            th_slope  = self.th_hist[-1] - self.th_hist[0]
+            fgt_slope = self.fgt_hist[-1] - self.fgt_hist[0]
+            signature = (th_slope < -0.5) and (fgt_slope > 2.0)
+
+        # Let degradation visibly develop first, then intervene
+        if degrading and (th < 88.0 or fgt > 215.0 or signature):
+            self.engage_autopilot(tags)
+
+    def engage_autopilot(self, tags):
+        """Dispatch the corrective control command + UI action event."""
+        self.autopilot_engaged = True
+        self.last_control_action = time.time()
+        ts = time.strftime("%H:%M:%S")
+
+        fgt  = tags.get("flue_gas_temp", 0)
+        th   = tags.get("tube_health", 0)
+        eff  = tags.get("efficiency", 0)
+        fuel = tags.get("fuel_flow", 0)
+
+        reason = (f"Tube-fouling signature detected: flue-gas {fgt:.0f}°C rising while "
+                  f"tube health {th:.0f}% falls. Trimming excess air, reducing firing "
+                  f"rate, and initiating soot blow to arrest the degradation slope.")
+
+        # 1) Engine command bus — this actually changes the physics
+        command = {
+            "action": "arrest_degradation",
+            "autopilot": True,
+            "o2_setpoint": 2.8,               # trim excess air → recover efficiency
+            "pressure_setpoint": 9.5,         # reduce firing rate → less thermal stress
+            "firing_reduction_pct": 12,
+            "degradation_rate_factor": 0.33,  # cut fouling accumulation ~67%
+            "soot_blow": True,                # one-shot partial UA recovery
+            "reason": reason,
+            "timestamp": time.time(),
+        }
+        self.mqtt_client.publish(TOPIC_CONTROL_CMD, json.dumps(command), qos=1)
+
+        # 2) Human-readable action event for the dashboard control console
+        action_event = {
+            "type": "control_action",
+            "headline": "AI Autopilot engaged — arresting tube fouling",
+            "timestamp": ts,
+            "setpoints": {"o2_percent": 2.8, "steam_pressure_bar": 9.5},
+            "firing_reduction_pct": 12,
+            "degradation_slope_reduction_pct": 67,
+            "soot_blow": True,
+            "reason": reason,
+            "before": {
+                "flue_gas_temp": round(fgt, 1),
+                "tube_health": round(th, 1),
+                "efficiency": round(eff, 1),
+                "fuel_flow": round(fuel, 1),
+            },
+            "commands": [
+                "SET o2_setpoint = 2.8 %",
+                "SET steam_pressure_setpoint = 9.5 bar",
+                "REDUCE firing_rate -12 %",
+                "INITIATE soot_blow",
+            ],
+        }
+        self.mqtt_client.publish(TOPIC_CONTROL_ACTION, json.dumps(action_event), qos=1)
+        print(f"[AI Analyst] 🤖 AUTONOMOUS CONTROL — autopilot engaged at {ts}, "
+              f"corrective command dispatched to engine.")
+
+    def handle_anomaly(self, payload):
+        """Generate diagnosis when anomaly score crosses threshold."""
+        score = payload.get("score", 0)
+        is_anomaly = payload.get("is_anomaly", False)
+        self.last_anomaly_score = score
+
+        if not is_anomaly:
+            return
+
+        # Debounce: one diagnosis per event
+        now = time.time()
+        if now - self.last_diagnosis_time < DIAGNOSIS_COOLDOWN:
+            return
+        self.last_diagnosis_time = now
+        self.stats.record_anomaly()
+
+        print(f"[AI Analyst] 🔍 Anomaly detected (score: {score}%). Generating diagnosis...")
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
+
+        # ── Deterministic pre-analysis ─────────────────────────────────────
+        samples = self.telemetry.get_recent_samples(last_n=30)
+        brief   = build_physics_brief(samples)
+        physics_block = format_brief_for_llm(brief, context="diagnosis")
+        print(f"[AI Analyst] 🧮 Deterministic verdict: {brief.hypothesis_label} [{brief.confidence}]")
+        if brief.pid_issues:
+            for pi in brief.pid_issues:
+                print(f"[AI Analyst] 🔧 PID issue [{pi.loop}]: {pi.symptom}")
+        # ─────────────────────────────────────────────────────────────────
+
+        # ── RAG: fetch relevant manual context ────────────────────────────
+        rag_query = f"{brief.hypothesis_label} boiler anomaly diagnosis corrective action"
+        manual_context = rag_retrieve(rag_query)
+        manual_block = (
+            f"BOILER MANUAL EXCERPTS (authoritative reference):\n{manual_context}\n\n"
+            if manual_context else ""
+        )
+        # ─────────────────────────────────────────────────────────────────
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a boiler maintenance engineer AI for NEXUS OS. "
+                    "A deterministic physics engine has already classified the fault — "
+                    "your job is to narrate the diagnosis and confirm the corrective actions. "
+                    "Return your response as JSON with: "
+                    "\"probable_cause\" (string, use the provided hypothesis label exactly), "
+                    "\"severity\" (string: critical/high/warning/low), "
+                    "\"explanation\" (string, 2-3 sentences — cite the specific sensor values provided), "
+                    "\"recommended_action\" (string, reference the numbered actions provided — add timing/urgency), "
+                    "\"confidence\" (number 0-100, use the deterministic confidence level), "
+                    "\"pattern_note\" (string or null — cite SESSION HISTORY if this repeats), "
+                    "\"deviated_sensors\" (array of objects: sensor, value, baseline, severity — copy from the deviating sensors list)."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Anomaly score: {score}% on BOILER-01.\n\n"
+                    f"{physics_block}\n\n"
+                    f"{manual_block}"
+                    f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
+                    "Return the incident diagnosis as JSON."
+                )
+            }
+        ]
+
+        response = call_llm(messages, json_mode=True)
+        if response:
+            try:
+                diagnosis = json.loads(response)
+                # Guarantee the deterministic hypothesis wins even if LLM drifts
+                if "probable_cause" not in diagnosis or not diagnosis["probable_cause"]:
+                    diagnosis["probable_cause"] = brief.hypothesis_label
+                diagnosis["_deterministic_hypothesis"] = brief.primary_hypothesis
+                diagnosis["_pid_issues"] = [
+                    {"loop": pi.loop, "symptom": pi.symptom, "fix": pi.recommended_action}
+                    for pi in brief.pid_issues
+                ]
+                self.mqtt_client.publish(TOPIC_DIAGNOSIS, json.dumps(diagnosis), qos=1)
+                self.memory.record_diagnosis(diagnosis)
+                print(f"[AI Analyst] ✅ Diagnosis published: {diagnosis.get('probable_cause', '?')}")
+            except json.JSONDecodeError:
+                print(f"[AI Analyst] ⚠ Non-JSON response from AI: {response[:100]}")
+        else:
+            # Fallback: publish deterministic-only diagnosis without LLM narrative
+            fallback = {
+                "probable_cause": brief.hypothesis_label,
+                "severity": brief.confidence.lower(),
+                "explanation": (
+                    f"Deterministic analysis identified {brief.hypothesis_label}. "
+                    f"Deviating sensors: {', '.join(d.sensor for d in brief.deviating_sensors[:3])}."
+                ),
+                "recommended_action": " | ".join(brief.corrective_actions[:2]),
+                "confidence": 80 if brief.confidence == "HIGH" else 50,
+                "pattern_note": None,
+                "deviated_sensors": [
+                    {"sensor": d.sensor, "value": d.value,
+                     "baseline": d.baseline, "severity": d.severity}
+                    for d in brief.deviating_sensors[:5]
+                ],
+                "_deterministic_hypothesis": brief.primary_hypothesis,
+                "_pid_issues": [
+                    {"loop": pi.loop, "symptom": pi.symptom, "fix": pi.recommended_action}
+                    for pi in brief.pid_issues
+                ],
+                "_llm_unavailable": True,
+            }
+            self.mqtt_client.publish(TOPIC_DIAGNOSIS, json.dumps(fallback), qos=1)
+            self.memory.record_diagnosis(fallback)
+            print("[AI Analyst] ⚠ LLM unavailable — deterministic-only diagnosis published")
+
+        # Reset status
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+
+    def handle_alert(self, payload):
+        """Generate diagnosis when critical alerts fire."""
+        severity = payload.get("severity", "")
+        self.stats.record_alert(severity)
+        self.memory.record_alert(payload)
+        if severity not in ("CRITICAL", "HIGH"):
+            return
+
+        # Debounce
+        now = time.time()
+        if now - self.last_diagnosis_time < DIAGNOSIS_COOLDOWN:
+            return
+        self.last_diagnosis_time = now
+
+        print(f"[AI Analyst] 🚨 Alert [{severity}]: {payload.get('message','')}. Generating diagnosis...")
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
+
+        # ── Deterministic pre-analysis ─────────────────────────────────────
+        samples = self.telemetry.get_recent_samples(last_n=30)
+        brief   = build_physics_brief(samples)
+        physics_block = format_brief_for_llm(brief, context="diagnosis")
+        print(f"[AI Analyst] 🧮 Deterministic verdict: {brief.hypothesis_label} [{brief.confidence}]")
+        if brief.pid_issues:
+            for pi in brief.pid_issues:
+                print(f"[AI Analyst] 🔧 PID issue [{pi.loop}]: {pi.symptom}")
+        # ─────────────────────────────────────────────────────────────────
+
+        # ── RAG: fetch relevant manual excerpts for this alert tag ─────────
+        rag_query = f"{payload.get('tag','')} {brief.hypothesis_label} boiler alarm corrective"
+        manual_context = rag_retrieve(rag_query)
+        manual_block = (
+            f"BOILER MANUAL EXCERPTS (authoritative reference):\n{manual_context}\n\n"
+            if manual_context else ""
+        )
+        # ─────────────────────────────────────────────────────────────────
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a boiler maintenance engineer AI for NEXUS OS. "
+                    "A deterministic physics engine has classified the fault — your job is to "
+                    "confirm, explain, and prioritise the corrective actions based on the alert context. "
+                    "When BOILER MANUAL EXCERPTS are provided, cite them. "
+                    "Cross-reference SESSION INCIDENT HISTORY: if this alert repeats, flag it in pattern_note. "
+                    "Return JSON with: probable_cause, severity (critical/high/warning/low), "
+                    "explanation (2-3 sentences with actual sensor values), "
+                    "recommended_action (prioritised steps with urgency/timing), "
+                    "confidence (0-100), pattern_note (string or null), "
+                    "deviated_sensors (array: sensor, value, baseline, severity)."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"ALERT FIRED on BOILER-01:\n"
+                    f"  Severity : {severity}\n"
+                    f"  Message  : {payload.get('message','')}\n"
+                    f"  Tag      : {payload.get('tag','')} = {payload.get('value','')} "
+                    f"(threshold {payload.get('threshold','?')})\n\n"
+                    f"{physics_block}\n\n"
+                    f"{manual_block}"
+                    f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
+                    "Return the incident diagnosis as JSON."
+                )
+            }
+        ]
+
+        response = call_llm(messages, json_mode=True)
+        if response:
+            try:
+                diagnosis = json.loads(response)
+                if "probable_cause" not in diagnosis or not diagnosis["probable_cause"]:
+                    diagnosis["probable_cause"] = brief.hypothesis_label
+                diagnosis["_deterministic_hypothesis"] = brief.primary_hypothesis
+                diagnosis["_pid_issues"] = [
+                    {"loop": pi.loop, "symptom": pi.symptom, "fix": pi.recommended_action}
+                    for pi in brief.pid_issues
+                ]
+                self.mqtt_client.publish(TOPIC_DIAGNOSIS, json.dumps(diagnosis), qos=1)
+                self.memory.record_diagnosis(diagnosis)
+                print(f"[AI Analyst] ✅ Diagnosis published: {diagnosis.get('probable_cause', '?')}")
+            except json.JSONDecodeError:
+                print(f"[AI Analyst] ⚠ Non-JSON response: {response[:100]}")
+        else:
+            # Fallback: publish deterministic-only diagnosis
+            fallback = {
+                "probable_cause": brief.hypothesis_label,
+                "severity": severity.lower(),
+                "explanation": (
+                    f"Alert fired: {payload.get('message','')}. "
+                    f"Deterministic analysis confirms {brief.hypothesis_label}. "
+                    f"Key deviations: {', '.join(str(d) for d in brief.deviating_sensors[:2])}."
+                ),
+                "recommended_action": " | ".join(brief.corrective_actions[:2]),
+                "confidence": 80 if brief.confidence == "HIGH" else 50,
+                "pattern_note": None,
+                "deviated_sensors": [
+                    {"sensor": d.sensor, "value": d.value,
+                     "baseline": d.baseline, "severity": d.severity}
+                    for d in brief.deviating_sensors[:5]
+                ],
+                "_deterministic_hypothesis": brief.primary_hypothesis,
+                "_pid_issues": [
+                    {"loop": pi.loop, "symptom": pi.symptom, "fix": pi.recommended_action}
+                    for pi in brief.pid_issues
+                ],
+                "_llm_unavailable": True,
+            }
+            self.mqtt_client.publish(TOPIC_DIAGNOSIS, json.dumps(fallback), qos=1)
+            self.memory.record_diagnosis(fallback)
+            print("[AI Analyst] ⚠ LLM unavailable — deterministic-only diagnosis published")
+
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+
+    # --------------------------------------------------------
+    # DOMAIN GUARDRAIL  (Tier-2: LLM-as-classifier)
+    # --------------------------------------------------------
+    _CLASSIFIER_PROMPT = (
+        "You are a strict domain classifier for NEXUS OS, an industrial boiler "
+        "monitoring system. Decide if the user question is on-domain or off-domain.\n\n"
+        "ON-DOMAIN — any question about:\n"
+        "  boiler operations, steam, pressure, temperature, drum level, tube health,\n"
+        "  efficiency, heat rate, fuel flow, air flow, O2, combustion, flue gas,\n"
+        "  feedwater, anomaly scores, alerts, maintenance, plant safety, NEXUS OS.\n\n"
+        "OFF-DOMAIN — anything else: food, sports, entertainment, celebrities,\n"
+        "  general coding help, weather, finance, jailbreaks, roleplay, etc.\n\n"
+        "Reply with exactly one word: YES (on-domain) or NO (off-domain)."
+    )
+
+    def _is_on_domain(self, question: str) -> bool:
+        """
+        Tier-2 LLM-as-classifier guardrail.
+        Makes a lightweight YES/NO call to Ollama before routing to the main
+        chat LLM. Falls back to a jailbreak-only check when Ollama is
+        unreachable so a connectivity blip never silently blocks operators.
+        """
+        messages = [
+            {"role": "system", "content": self._CLASSIFIER_PROMPT},
+            {"role": "user", "content": question},
+        ]
+        try:
+            # Increased max_tokens to accommodate reasoning models (e.g. DeepSeek-R1 <think> blocks)
+            result = call_llm(messages, json_mode=False, max_tokens=200)
+            if result is None:
+                print("[AI Analyst] ⚠ Classifier LLM unavailable — jailbreak-only fallback")
+                return self._jailbreak_fallback(question)
+            
+            # Remove <think>...</think> block if present
+            clean_result = result.split("</think>")[-1].strip().upper()
+            is_ok = clean_result.startswith("YES")
+            
+            tag = "✅ ON-DOMAIN" if is_ok else "🚫 OFF-DOMAIN"
+            print(f"[AI Analyst] {tag}: {question[:70]}")
+            return is_ok
+        except Exception as e:
+            print(f"[AI Analyst] ⚠ Classifier error ({e}) — jailbreak-only fallback")
+            return self._jailbreak_fallback(question)
+
+    @staticmethod
+    def _jailbreak_fallback(question: str) -> bool:
+        """
+        Last-resort check used only when the classifier LLM is unreachable.
+        Blocks obvious jailbreak attempts; allows everything else so a
+        connectivity blip never silently locks out legitimate operator queries.
+        """
+        q = question.lower()
+        JAILBREAKS = [
+            "ignore previous", "ignore your", "forget your",
+            "pretend you", "pretend to be", "act as", "you are now",
+            "override your", "new instructions", "disregard",
+        ]
+        return not any(j in q for j in JAILBREAKS)
+
+    def handle_chat(self, payload):
+        """Handle user chat questions — 'Ask the Plant' feature."""
+        # Shift report requests arrive on the same topic with a type marker
+        if payload.get("type") == "shift_report":
+            self.handle_shift_report()
+            return
+
+        question = payload.get("question", "").strip()
+        if not question:
+            return
+
+        # ── GUARDRAIL: reject off-topic questions immediately ──────────────
+        if not self._is_on_domain(question):
+            print(f"[AI Analyst] 🚫 Off-topic question blocked: {question[:80]}")
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                "answer": (
+                    "I'm NEXUS OS — a specialist AI for BOILER-01 operations and "
+                    "telemetry analysis. I can only answer questions related to "
+                    "boiler performance, sensor readings, faults, maintenance, "
+                    "or plant safety. Please ask me something about the boiler."
+                ),
+                "timestamp": time.time()
+            }), qos=1)
+            self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+            return
+        # ──────────────────────────────────────────────────────────────────
+
+        # "What-if" scenarios get the dedicated step-by-step simulator
+        if payload.get("type") == "what_if" or "what if" in question.lower()[:40]:
+            self.handle_what_if(question)
+            return
+
+        print(f"[AI Analyst] 💬 Chat question: {question}")
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
+
+        # ── Deterministic pre-analysis ─────────────────────────────────────
+        samples = self.telemetry.get_recent_samples(last_n=30)
+        brief   = build_physics_brief(samples)
+
+        # Detect if question is efficiency-focused for richer context injection
+        q_lower = question.lower()
+        is_efficiency_q = any(kw in q_lower for kw in [
+            "efficiency", "heat rate", "fuel", "stack loss", "flue gas", "tube"
+        ])
+        is_level_q = any(kw in q_lower for kw in [
+            "drum", "level", "feedwater", "water"
+        ])
+        is_combustion_q = any(kw in q_lower for kw in [
+            "o2", "oxygen", "air", "combustion", "flame", "burner"
+        ])
+        is_pressure_q = any(kw in q_lower for kw in [
+            "pressure", "steam", "safety valve", "trip"
+        ])
+
+        chat_context = "efficiency" if is_efficiency_q else "chat"
+        physics_block = format_brief_for_llm(brief, context=chat_context)
+        print(f"[AI Analyst] 🧮 Deterministic context: {brief.hypothesis_label} [{brief.confidence}]")
+        # ─────────────────────────────────────────────────────────────────
+
+        # ── RAG: retrieve relevant manual excerpts ─────────────────────────
+        manual_context = rag_retrieve(question)
+        manual_block = (
+            f"BOILER MANUAL EXCERPTS (cite when relevant):\n{manual_context}\n\n"
+            if manual_context else ""
+        )
+        # ─────────────────────────────────────────────────────────────────
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a boiler operations expert AI for NEXUS OS monitoring BOILER-01. "
+                    "A deterministic physics engine has already computed the current plant state — "
+                    "you MUST anchor your answer to the specific sensor values and computed findings provided. "
+                    "Do NOT give generic boiler theory. "
+                    "Cite actual numbers: 'efficiency is 73.2%, 16.1% below the 87% baseline because...' "
+                    "FORMATTING (strict): "
+                    "**bold** for sensor names/values only. Dash bullet lists for recommendations. "
+                    "No markdown tables, no HTML, no headers (##). Max 180 words. "
+                    "Resolve follow-up questions using the conversation history."
+                )
+            }
+        ]
+        # Inject recent conversation for follow-up resolution
+        messages.extend(self.chat_history)
+        messages.append({
+            "role": "user",
+            "content": (
+                f"{physics_block}\n\n"
+                f"{manual_block}"
+                f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
+                f"OPERATOR QUESTION: {question}"
+            )
+        })
+
+        response = call_llm(messages, json_mode=False, max_tokens=250)
+        if response:
+            self.chat_history.append({"role": "user", "content": question})
+            self.chat_history.append({"role": "assistant", "content": response})
+            chat_response = {
+                "answer": response,
+                "timestamp": time.time()
+            }
+            info = self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(chat_response), qos=1)
+            info.wait_for_publish(timeout=2)
+            print(f"[AI Analyst] ✅ Chat response sent")
+        else:
+            error_response = {
+                "answer": "I'm unable to reach the AI service right now. Please check the Ollama server and network connection.",
+                "timestamp": time.time()
+            }
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(error_response), qos=1)
+
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+
+    def handle_what_if(self, question):
+        """What-If Simulator — walk through the physical consequence chain of a hypothetical."""
+        print(f"[AI Analyst] 🧪 What-if scenario: {question}")
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
+
+        latest = self.telemetry.get_latest_summary()
+        trend = self.telemetry.get_context(last_n=30)
+
+        # ── RAG: fetch manual excerpts relevant to this hypothetical ────────
+        manual_context = rag_retrieve(question)
+        manual_block = (
+            f"BOILER MANUAL EXCERPTS (use as authoritative safety reference):\n{manual_context}\n\n"
+            if manual_context else ""
+        )
+        # ────────────────────────────────────────────────────────────────────
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a boiler physics simulation expert for NEXUS OS, monitoring BOILER-01, an "
+                    "industrial fire-tube boiler. An operator poses a hypothetical scenario. Starting from "
+                    "the CURRENT live state provided, walk through the physical consequence chain "
+                    "step-by-step, citing real thermodynamics and these protection thresholds:\n"
+                    "- Drum level: 400mm setpoint | LOW alarm <280mm | CRITICAL <200mm (dry-firing risk, "
+                    "tube rupture hazard)\n"
+                    "- Steam pressure: 10 bar setpoint | HIGH alarm >13 bar | safety valve lifts at 13.5 bar\n"
+                    "- Flue gas temp: ~198°C normal | HIGH alarm >240°C (tube fouling indicator)\n"
+                    "- O2: 2-4% optimal band | >5.5% excess air alarm | <2% incomplete combustion / CO risk\n"
+                    "- Tube health: <70% requires inspection | Steam temp follows saturation curve + 5°C superheat\n\n"
+                    "Be quantitative — reference the actual current sensor values as the starting point and "
+                    "estimate magnitudes/timescales where physics allows. Do not invent sensors that don't exist.\n\n"
+                    "Return strict JSON:\n"
+                    "{\n"
+                    '  "scenario": "short restatement of the hypothetical",\n'
+                    '  "risk_level": "low|medium|high|critical",\n'
+                    '  "summary": "1-2 sentence overall assessment",\n'
+                    '  "steps": [{"step": 1, "event": "what happens", "consequence": "physical effect, with values/thresholds"}],\n'
+                    '  "operator_actions": ["2-4 specific preventive/corrective actions"]\n'
+                    "}\n"
+                    "Use 3-6 steps, ordered as the causal chain would actually unfold."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{manual_block}"
+                    f"CURRENT BOILER STATE:\n{latest}\n\n"
+                    f"RECENT TELEMETRY (last 30 seconds):\n{trend}\n\n"
+                    f"OPERATOR HYPOTHETICAL: {question}\n\n"
+                    "Simulate the consequence chain and return JSON."
+                )
+            }
+        ]
+
+        response = call_llm(messages, json_mode=True, max_tokens=900)
+        if response:
+            try:
+                sim = json.loads(response)
+                sim["type"] = "what_if"
+                sim["timestamp"] = time.time()
+                self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(sim), qos=1)
+                # Keep a condensed record so follow-up chat questions can reference it
+                self.chat_history.append({"role": "user", "content": question})
+                self.chat_history.append({
+                    "role": "assistant",
+                    "content": f"[What-if simulation] {sim.get('summary', '')} "
+                               f"Risk level: {sim.get('risk_level', '?')}."
+                })
+                print(f"[AI Analyst] ✅ What-if simulation published (risk: {sim.get('risk_level','?')})")
+            except json.JSONDecodeError:
+                print(f"[AI Analyst] ⚠ Non-JSON what-if response: {response[:100]}")
+                self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                    "answer": response, "timestamp": time.time()
+                }), qos=1)
+        else:
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                "answer": "I couldn't run the what-if simulation — the AI service is unreachable.",
+                "timestamp": time.time()
+            }), qos=1)
+
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+
+    def handle_shift_report(self):
+        """Generate an end-of-shift summary report (roadmap feature 3)."""
+        print("[AI Analyst] 📋 Shift report requested. Generating...")
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
+
+        stats = self.stats.snapshot()
+        latest = self.telemetry.get_latest_summary()
+        trend = self.telemetry.get_context(last_n=60)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a boiler operations supervisor AI for NEXUS OS writing an end-of-shift report for BOILER-01. "
+                    "You are given hard shift statistics (computed locally — treat them as ground truth) plus current "
+                    "readings and a recent trend window. Return strict JSON with these fields: "
+                    "\"summary\" (string, 1-2 sentence narrative of the shift), "
+                    "\"overall_status\" (string: good/fair/poor), "
+                    "\"highlights\" (array of 3-5 short strings: notable events, trends, or confirmations of stability), "
+                    "\"follow_ups\" (array of 2-4 short strings: specific recommended actions for the next shift). "
+                    "Cite specific sensor values where relevant. Do not invent events not supported by the data."
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"SHIFT STATISTICS:\n{json.dumps(stats, indent=2)}\n\n"
+                    f"CURRENT READINGS:\n{latest}\n\n"
+                    f"RECENT TREND (last 60 seconds):\n{trend}\n\n"
+                    "Write the end-of-shift report as JSON."
+                )
+            }
+        ]
+
+        response = call_llm(messages, json_mode=True, max_tokens=600)
+        report = dict(stats)
+        report["type"] = "shift_report"
+        report["timestamp"] = time.time()
+
+        if response:
+            try:
+                llm_fields = json.loads(response)
+                for key in ("summary", "overall_status", "highlights", "follow_ups"):
+                    if key in llm_fields:
+                        report[key] = llm_fields[key]
+            except json.JSONDecodeError:
+                print(f"[AI Analyst] ⚠ Non-JSON shift report from AI: {response[:100]}")
+                report["summary"] = "Shift statistics compiled, but the AI narrative could not be generated."
+        else:
+            report["summary"] = "Shift statistics compiled, but the AI service was unreachable for the narrative."
+
+        self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(report), qos=1)
+        print("[AI Analyst] ✅ Shift report published")
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+
+    def run(self):
+        print("=" * 60)
+        print("  NEXUS OS — AI Analyst Service")
+        print(f"  Backend: OLLAMA")
+        print(f"  Model  : {OLLAMA_MODEL}")
+        print(f"  Broker : {BROKER}:{PORT}")
+        print(f"  Ollama : {OLLAMA_BASE_URL}")
+        print("=" * 60)
+
+        self.mqtt_client.on_connect = self.on_connect
+        self.mqtt_client.on_message = self.on_message
+        self.mqtt_client.connect(BROKER, PORT, 60)
+        self.mqtt_client.loop_forever()
+
+
+if __name__ == "__main__":
+    analyst = AIAnalyst()
+    analyst.run()
