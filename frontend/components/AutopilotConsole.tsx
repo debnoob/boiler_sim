@@ -11,8 +11,19 @@ import type { ControlActionPayload } from '@/types/telemetry';
 ───────────────────────────────────────────────────────────────────────── */
 
 export function AutopilotConsole() {
-  const { controlState, controlActions } = useNexusStore();
+  const { controlState, controlActions, interventionEvents, forecastDeadline } = useNexusStore();
   const isActive = controlState?.autopilot ?? false;
+
+  // Total life saved: current ETA vs what ETA was before first intervention
+  const firstEvent = interventionEvents[0];
+  const totalSavedDisplay = (() => {
+    if (!firstEvent?.forecastDeadlineAtDetection || forecastDeadline == null) return null;
+    const delta = forecastDeadline - firstEvent.forecastDeadlineAtDetection;
+    if (delta <= 60) return null;
+    const h = Math.floor(delta / 3600);
+    const m = Math.floor((delta % 3600) / 60);
+    return h > 0 ? `+${h}h ${m}m` : `+${m}m`;
+  })();
 
   return (
     <div
@@ -76,6 +87,16 @@ export function AutopilotConsole() {
             {isActive ? 'ACTIVE' : 'STANDBY'}
           </span>
         </div>
+
+        {totalSavedDisplay && (
+          <div style={{
+            fontSize: 11, fontWeight: 800, padding: '3px 12px', borderRadius: 20,
+            background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)',
+            color: '#4ade80', letterSpacing: '0.02em',
+          }}>
+            {totalSavedDisplay} tube life saved this shift
+          </div>
+        )}
 
         {controlState && isActive ? (
           <div style={{ display: 'flex', gap: 18 }}>

@@ -13,6 +13,7 @@ import { ForecastChart } from './charts/ForecastChart';
 import { ShadowSetpointChart } from './charts/ShadowSetpointChart';
 import { PredictiveRunwayGauge } from './charts/PredictiveRunwayGauge';
 import { BeforeAfterReplayChart } from './charts/BeforeAfterReplayChart';
+import { GhostLineChart } from './charts/GhostLineChart';
 import { AutopilotConsole } from './AutopilotConsole';
 
 const MAX_CHART_POINTS = 60;
@@ -282,6 +283,15 @@ export function PredictivePanel() {
               <div className="text-[10px]" style={{ color: 'var(--tx-muted)' }}>kg steam / m³ fuel</div>
             </div>
           </div>
+
+          {/* Ghost line — actual vs no-action trajectory */}
+          <GhostLineChart
+            healthHistory={healthHistory}
+            interventionEvents={interventionEvents}
+            forecastDeadline={forecastDeadline}
+            heartbeatCount={heartbeatCount}
+            isLight={isLight}
+          />
 
           {/* Row 2: Trends + Divergence — now with intervention lines */}
           <div className="grid grid-cols-2 gap-3">

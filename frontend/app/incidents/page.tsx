@@ -40,42 +40,44 @@ export default function IncidentsPage() {
             </div>
             <span className="audit-pill">{latestDiagnosis ? `Updated ${latestDiagnosis.ts}` : 'Standby'}</span>
           </div>
-          {latestDiagnosis ? (
-            <div className="incident-card">
-              <div className="incident-title-row">
-                <span style={{ background: severityColor(latestDiagnosis.data.severity) }}>
-                  {latestDiagnosis.data.severity || 'warning'}
-                </span>
-                <strong>{latestDiagnosis.data.probable_cause || 'Boiler anomaly'}</strong>
-              </div>
-              {latestDiagnosis.data.explanation && <p>{latestDiagnosis.data.explanation}</p>}
-              <div className="evidence-list">
-                {(latestDiagnosis.data.deviated_sensors || []).slice(0, 4).map((sensor, i) => (
-                  <div key={`${sensor.sensor}-${i}`}>
-                    <span>{sensor.sensor || sensor.tag}</span>
-                    <strong>{sensor.value ?? '--'}</strong>
-                    <em>baseline {sensor.baseline ?? '--'}</em>
-                  </div>
-                ))}
-              </div>
-              {latestDiagnosis.data.recommended_action && (
-                <div className="operator-action">
-                  <span>Recommended action</span>
-                  <p>{latestDiagnosis.data.recommended_action}</p>
+          <div style={{ padding: '0 1.5rem 1.5rem 1.5rem' }}>
+            {latestDiagnosis ? (
+              <div className="incident-card">
+                <div className="incident-title-row">
+                  <span style={{ background: severityColor(latestDiagnosis.data.severity) }}>
+                    {latestDiagnosis.data.severity || 'warning'}
+                  </span>
+                  <strong>{latestDiagnosis.data.probable_cause || 'Boiler anomaly'}</strong>
                 </div>
-              )}
-              <div className="action-row">
-                <button>Acknowledge</button>
-                <button>Create Work Order</button>
-                <button>Run What-if</button>
+                {latestDiagnosis.data.explanation && <p>{latestDiagnosis.data.explanation}</p>}
+                <div className="evidence-list">
+                  {(latestDiagnosis.data.deviated_sensors || []).slice(0, 4).map((sensor, i) => (
+                    <div key={`${sensor.sensor}-${i}`}>
+                      <span>{sensor.sensor || sensor.tag}</span>
+                      <strong>{sensor.value ?? '--'}</strong>
+                      <em>baseline {sensor.baseline ?? '--'}</em>
+                    </div>
+                  ))}
+                </div>
+                {latestDiagnosis.data.recommended_action && (
+                  <div className="operator-action">
+                    <span>Recommended action</span>
+                    <p>{latestDiagnosis.data.recommended_action}</p>
+                  </div>
+                )}
+                <div className="action-row">
+                  <button>Acknowledge</button>
+                  <button>Create Work Order</button>
+                  <button>Run What-if</button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="empty-incident">
-              <strong>No active AI incident</strong>
-              <span>Inject a fault to trigger anomaly detection and generate an incident card.</span>
-            </div>
-          )}
+            ) : (
+              <div className="empty-incident">
+                <strong>No active AI incident</strong>
+                <span>Inject a fault to trigger anomaly detection and generate an incident card.</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Alarm Queue */}
@@ -91,7 +93,7 @@ export default function IncidentsPage() {
               </span>
             )}
           </div>
-          <div style={{ padding: '8px 0' }}>
+          <div style={{ padding: '0 1.5rem 1.5rem 1.5rem' }}>
             {activeAlerts.length ? activeAlerts.map(alert => (
               <div className="rail-alert wide" key={alert.id}>
                 <span className={`alarm-dot ${alert.severity.toLowerCase()}`} />

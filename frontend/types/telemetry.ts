@@ -163,6 +163,7 @@ export interface InterventionEvent {
   fuelFlowReduction: number;   // percent
   efficiencyAtEvent: number;
   flueGasTempAtEvent: number;
+  tubeHealthAtEvent: number;
   label: string;
   forecastDeadlineAtDetection: number | null;  // seconds timestamp
 }

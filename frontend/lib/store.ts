@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { calcRisk } from './utils';
 import type {
   TelemetryTags,
   StreamMessage,
@@ -32,6 +33,13 @@ interface ChartSeries {
 }
 
 interface ScatterPoint { x: number; y: number; }
+
+export interface KpiBaseline {
+  steam_pressure: number;
+  drum_level: number;
+  efficiency: number;
+  tube_health: number;
+}
 
 function pushPoint(series: ChartSeries, values: number[]): ChartSeries {
   const labels = [...series.labels, ''];
@@ -66,12 +74,17 @@ export interface NexusStore {
   // Alerts / timeline
   alerts: AlertEvent[];
   addAlert: (alert: AlertEvent) => void;
+  acknowledgedAlertIds: string[];
+  acknowledgeAlert: (id: string) => void;
 
   // Charts data
   performanceSeries: ChartSeries;   // [efficiency, tube_health, heat_rate]
   divergenceSeries: ChartSeries;    // [steam_temp, flue_gas_temp]
   anomalySeries: ChartSeries;       // [anomaly_score]
   fuelFlowSeries: ChartSeries;      // [fuel_flow]
+  kpiSeries: ChartSeries;           // [steam_pressure, drum_level, efficiency, tube_health]
+  kpiBaseline: KpiBaseline | null;  // first observed values, for session deltas
+  riskSeries: ChartSeries;          // [failure_risk] — composite reliability risk over time
   scatterData: ScatterPoint[];
 
   // AI intervention tracking
@@ -127,6 +140,14 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
     const perfSeries = pushPoint(state.performanceSeries, [tags.efficiency, tags.tube_health, tags.heat_rate]);
     const divSeries = pushPoint(state.divergenceSeries, [tags.steam_temperature, tags.flue_gas_temp]);
     const fuelFlowSeries = pushPoint(state.fuelFlowSeries, [tags.fuel_flow]);
+    const kpiSeries = pushPoint(state.kpiSeries, [tags.steam_pressure, tags.drum_level, tags.efficiency, tags.tube_health]);
+    const riskSeries = pushPoint(state.riskSeries, [calcRisk(tags, degradation)]);
+    const kpiBaseline = state.kpiBaseline ?? {
+      steam_pressure: tags.steam_pressure,
+      drum_level: tags.drum_level,
+      efficiency: tags.efficiency,
+      tube_health: tags.tube_health,
+    };
 
     const newScatter: ScatterPoint[] = [...state.scatterData, { x: tags.fuel_flow, y: tags.steam_flow }];
     if (newScatter.length > MAX_SCATTER_POINTS) newScatter.shift();
@@ -162,6 +183,9 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       performanceSeries: perfSeries,
       divergenceSeries: divSeries,
       fuelFlowSeries,
+      kpiSeries,
+      kpiBaseline,
+      riskSeries,
       scatterData: newScatter,
       healthHistory,
       forecastDeadline,
@@ -200,11 +224,22 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       return { alerts };
     });
   },
+  acknowledgedAlertIds: [],
+  acknowledgeAlert: (id) => {
+    set((state) => (
+      state.acknowledgedAlertIds.includes(id)
+        ? state
+        : { acknowledgedAlertIds: [...state.acknowledgedAlertIds, id] }
+    ));
+  },
 
   performanceSeries: { labels: [], datasets: [[], [], []] },
   divergenceSeries: { labels: [], datasets: [[], []] },
   anomalySeries: { labels: [], datasets: [[]] },
   fuelFlowSeries: { labels: [], datasets: [[]] },
+  kpiSeries: { labels: [], datasets: [[], [], [], []] },
+  kpiBaseline: null,
+  riskSeries: { labels: [], datasets: [[]] },
   scatterData: [],
   healthHistory: [],
   forecastDeadline: null,
@@ -229,6 +264,7 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       fuelFlowReduction: a.firing_reduction_pct,
       efficiencyAtEvent: before.efficiency,
       flueGasTempAtEvent: before.flue_gas_temp,
+      tubeHealthAtEvent: before.tube_health,
       label: `AI reduced firing ${a.firing_reduction_pct}% at ${a.timestamp} — degradation slope reduced ${a.degradation_slope_reduction_pct}%`,
       forecastDeadlineAtDetection: state.forecastDeadline,
     };

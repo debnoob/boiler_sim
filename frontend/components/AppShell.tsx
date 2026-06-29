@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, TrendingUp, AlertTriangle, Sliders, FileText } from 'lucide-react';
+import { LayoutDashboard, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
 import { ChatWidget } from './ChatWidget';
 import { useNexusStore } from '@/lib/store';
 import { exportToPowerBI } from '@/lib/exportToPowerBI';
@@ -35,6 +35,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { mqttStatus, mode, alerts, tags, toggleTheme } = useNexusStore();
   const [clock, setClock] = useState('');
   const [hovered, setHovered] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   useEffect(() => {
     const tick = () => setClock(new Date().toLocaleTimeString());
@@ -63,19 +64,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         background: 'var(--bg-surface)',
         borderRight: '1px solid var(--bd-card)',
         overflowY: 'auto',
+        transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.3s ease',
       }}>
         {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '18px 16px 14px', borderBottom: '1px solid var(--bd-inner)' }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 8,
-            background: '#a16207', color: '#09090b',
-            fontWeight: 900, fontSize: 13, letterSpacing: -1,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          }}>Nx</div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--accent-text)', letterSpacing: '-0.02em' }}>NEXUS OS</div>
-            <div style={{ fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginTop: 1 }}>Boiler Intelligence</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 16px 14px', borderBottom: '1px solid var(--bd-inner)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: 8,
+              background: '#a16207', color: '#09090b',
+              fontWeight: 900, fontSize: 13, letterSpacing: -1,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>Nx</div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--accent-text)', letterSpacing: '-0.02em' }}>NEXUS OS</div>
+              <div style={{ fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginTop: 1 }}>Boiler Intelligence</div>
+            </div>
           </div>
+          <button 
+            onClick={() => setIsSidebarOpen(false)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tx-secondary)', display: 'flex', padding: 4, borderRadius: 4 }}
+            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
+            onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
+          >
+            <ArrowLeft size={18} />
+          </button>
         </div>
 
         {/* Nav */}
@@ -139,7 +152,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* ── Main ─────────────────────────────────────────────── */}
-      <div style={{ marginLeft: SIDEBAR_W, flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      <div style={{ marginLeft: isSidebarOpen ? SIDEBAR_W : 0, transition: 'margin-left 0.3s ease', flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
 
         {/* Top bar */}
         <header style={{
@@ -150,8 +163,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           background: 'var(--bg-surface)',
           borderBottom: '1px solid var(--bd-card)',
         }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginBottom: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0 }}>
+            {!isSidebarOpen && (
+              <button 
+                onClick={() => setIsSidebarOpen(true)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tx-primary)', display: 'flex', padding: 4, borderRadius: 4 }}
+                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
+              >
+                <Menu size={20} />
+              </button>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginBottom: 2 }}>
               <span>Nexus Demo Plant</span>
               <span style={{ opacity: 0.4 }}>/</span>
               <span>Pumphouse 4</span>
@@ -162,6 +186,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {pageTitle}
             </h1>
           </div>
+        </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
             <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', padding: '3px 10px', borderRadius: 99, border: `1px solid ${modeColor}55`, color: modeColor, textTransform: 'uppercase' }}>
