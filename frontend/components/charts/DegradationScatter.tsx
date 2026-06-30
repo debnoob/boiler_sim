@@ -50,10 +50,8 @@ export function DegradationScatter({ data, isLight }: Props) {
 
   return (
     <div className="inner-card">
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          Degradation Scatter (Fuel vs Steam)
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">Degradation Scatter (Fuel vs Steam)</div>
       </div>
       <div className="relative h-[120px] w-full">
         <canvas ref={canvasRef} />

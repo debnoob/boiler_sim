@@ -180,17 +180,11 @@ export function GhostLineChart({
 
   return (
     <div className="inner-card">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--tx-label)' }}>
-          Tube Health · Autopilot vs No-Action
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">Tube Health · Autopilot vs No-Action</div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {savedHours && (
-            <div style={{
-              fontSize: 11, fontWeight: 800, padding: '2px 10px', borderRadius: 20,
-              background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.35)',
-              color: '#4ade80', letterSpacing: '0.02em',
-            }}>
+            <div className="status-pill ok">
               {savedHours} life extended
             </div>
           )}
@@ -204,8 +198,9 @@ export function GhostLineChart({
 
       <div style={{ position: 'relative', height: 130 }}>
         {healthHistory.length < 5 && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ fontSize: 10, color: 'var(--tx-muted)', fontStyle: 'italic' }}>Collecting health history…</span>
+          <div className="loading-state" style={{ position: 'absolute', inset: 0 }}>
+            <span className="loading-dot" />
+            <span>Collecting health history</span>
           </div>
         )}
         <canvas ref={canvasRef} />

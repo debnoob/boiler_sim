@@ -8,7 +8,7 @@ export default function ControlsPage() {
   const lastAction = controlActions[controlActions.length - 1];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1280 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%' }}>
       <AutopilotConsole />
 
       <div className="card">

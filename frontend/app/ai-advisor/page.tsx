@@ -8,7 +8,7 @@ export default function AiAdvisorPage() {
   const diagnosisCount = chatMessages.filter(m => m.type === 'diagnosis').length;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, alignItems: 'start', maxWidth: 1280 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16, alignItems: 'start', width: '100%' }}>
       {/* Chat */}
       <div style={{ minWidth: 0 }}>
         <AiChat />

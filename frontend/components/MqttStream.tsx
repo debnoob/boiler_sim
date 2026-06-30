@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { RadioTower } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 
 const COLOR_MAP = { emerald: '#4ade80', amber: '#fbbf24', red: '#ef4444' };
@@ -23,7 +24,7 @@ export function MqttStream() {
             className="flex items-center gap-2 px-4 py-3 border-b"
             style={{ borderColor: 'var(--bd-stream)', background: 'var(--bg-base)' }}
           >
-            <span style={{ color: '#a16207', fontSize: 13 }}>⬡</span>
+            <RadioTower size={14} color="var(--accent)" />
             <span className="text-xs font-semibold uppercase tracking-widest" style={{ color: 'var(--tx-muted)' }}>
               MQTT Intelligence Stream
             </span>

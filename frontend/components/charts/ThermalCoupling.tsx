@@ -160,15 +160,10 @@ export function ThermalCoupling({ labels, steamTemp, flueGasTemp, isLight, inter
 
   return (
     <div className="inner-card">
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          Thermal Coupling
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">Thermal Coupling</div>
         {hasIntervention && (
-          <div className="flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded" style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', color: '#fbbf24' }}>
-            <span>⚡</span>
-            <span>AI intervened</span>
-          </div>
+          <div className="status-pill ai">AI intervened</div>
         )}
       </div>
       <div className="relative h-[120px] w-full">

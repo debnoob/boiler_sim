@@ -172,14 +172,11 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
 
   return (
     <div className="inner-card">
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          {label} · Moirai Forecast
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">{label} · Moirai Forecast</div>
         {backend && (
           <span
-            className="text-[8px] font-bold px-1.5 py-0.5 rounded"
-            style={{ background: 'var(--bg-elevated)', color: backend === 'simulation' ? '#f59e0b' : '#4ade80', border: '1px solid var(--bd-inner)' }}
+            className={`status-pill ${backend === 'simulation' ? 'warn' : 'ok'}`}
           >
             {backend === 'uni2ts' ? 'Moirai AI' : backend === 'simulation' ? 'Sim' : 'HF'}
           </span>
@@ -188,10 +185,9 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
 
       <div className="relative h-[110px] w-full">
         {!hasData && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-[10px] italic" style={{ color: 'var(--tx-muted)' }}>
-              Waiting for forecast data…
-            </span>
+          <div className="absolute inset-0 loading-state">
+            <span className="loading-dot" />
+            <span>Waiting for forecast data</span>
           </div>
         )}
         <canvas ref={canvasRef} />

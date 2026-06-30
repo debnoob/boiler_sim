@@ -59,8 +59,7 @@ export function ChatWidget() {
           transformOrigin: 'bottom right',
           borderRadius: 18,
           overflow: 'hidden',
-          /* prominent shadow + amber glow */
-          boxShadow: '0 30px 70px -14px rgba(0,0,0,0.78), 0 0 0 1px rgba(251,191,36,0.22), 0 0 38px rgba(161,98,7,0.16)',
+          boxShadow: '0 30px 70px -14px rgba(0,0,0,0.78), 0 0 0 1px rgba(6,182,212,0.24), 0 0 38px rgba(6,182,212,0.14)',
           backdropFilter: 'blur(18px) saturate(1.08)',
           WebkitBackdropFilter: 'blur(18px) saturate(1.08)',
         }}
@@ -84,16 +83,16 @@ export function ChatWidget() {
           borderRadius: '50%',
           background: open
             ? 'var(--bg-elevated)'
-            : 'linear-gradient(140deg, #78350f 0%, #a16207 45%, #ca8a04 100%)',
-          border: `2px solid ${open ? 'var(--bd-inner)' : 'rgba(251,191,36,0.45)'}`,
-          color: open ? 'var(--tx-secondary)' : '#fef3c7',
+            : 'linear-gradient(140deg, #0e7490 0%, #06b6d4 50%, #a78bfa 100%)',
+          border: `2px solid ${open ? 'var(--bd-inner)' : 'rgba(6,182,212,0.46)'}`,
+          color: open ? 'var(--tx-secondary)' : '#ecfeff',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
           boxShadow: open
             ? '0 4px 14px rgba(0,0,0,0.4)'
-            : '0 8px 28px rgba(161,98,7,0.6), 0 2px 8px rgba(0,0,0,0.35)',
+            : '0 8px 28px rgba(6,182,212,0.42), 0 2px 8px rgba(0,0,0,0.35)',
           transition: 'all 0.2s ease',
           outline: 'none',
           /* pulse ring when AI is analyzing */
@@ -144,8 +143,8 @@ export function ChatWidget() {
       {/* Keyframe for the FAB pulse ring */}
       <style>{`
         @keyframes fabPulse {
-          0%,100% { box-shadow: 0 8px 28px rgba(161,98,7,0.6), 0 2px 8px rgba(0,0,0,0.35), 0 0 0 0 rgba(251,191,36,0.5); }
-          50%      { box-shadow: 0 8px 28px rgba(161,98,7,0.6), 0 2px 8px rgba(0,0,0,0.35), 0 0 0 10px rgba(251,191,36,0); }
+          0%,100% { box-shadow: 0 8px 28px rgba(6,182,212,0.42), 0 2px 8px rgba(0,0,0,0.35), 0 0 0 0 rgba(6,182,212,0.42); }
+          50%      { box-shadow: 0 8px 28px rgba(6,182,212,0.42), 0 2px 8px rgba(0,0,0,0.35), 0 0 0 10px rgba(6,182,212,0); }
         }
       `}</style>
     </>

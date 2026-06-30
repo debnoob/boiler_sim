@@ -150,12 +150,10 @@ export function ShadowSetpointChart({ fuelFlow, interventionRelIdx, fuelFlowBefo
 
   return (
     <div className="inner-card">
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          🎛️ Shadow Setpoint — Fuel Flow
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">Shadow Setpoint · Fuel Flow</div>
         {hasIntervention && fuelFlowBefore != null && (
-          <div className="text-[9px] font-semibold px-1.5 py-0.5 rounded" style={{ background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', color: '#4ade80' }}>
+          <div className="status-pill ok">
             −12% vs nominal
           </div>
         )}

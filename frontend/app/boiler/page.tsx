@@ -32,7 +32,7 @@ export default function BoilerPage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1280 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%' }}>
       <div className="card" style={{ overflow: 'hidden' }}>
         <div className="ops-panel-header">
           <div>

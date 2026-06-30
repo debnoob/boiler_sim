@@ -29,6 +29,7 @@ export function GaugeChart({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<Chart | null>(null);
   const clampedValue = Math.min(Math.max(value, 0), maxValue);
+  const statusTone = statusLabel === 'CRITICAL' ? 'crit' : statusLabel === 'WARNING' ? 'warn' : statusLabel === 'NORMAL' ? 'ok' : 'info';
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -64,12 +65,10 @@ export function GaugeChart({
 
   return (
     <div className="inner-card relative flex flex-col items-center gap-2">
-      <div className="w-full flex items-center justify-between gap-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--tx-label)' }}>
-          {label}
-        </div>
+      <div className="chart-card-header w-full">
+        <div className="chart-card-title">{label}</div>
         {statusLabel && (
-          <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color }}>
+          <div className={`status-pill ${statusTone}`}>
             {statusLabel}
           </div>
         )}

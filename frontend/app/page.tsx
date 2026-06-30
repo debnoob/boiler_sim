@@ -143,7 +143,7 @@ export default function OverviewPage() {
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1280 }}>
+    <div className="page-body">
 
       {/* Status strip */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>

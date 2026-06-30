@@ -24,11 +24,9 @@ export function DrumLevelGauge({ value }: DrumLevelGaugeProps) {
 
   return (
     <div className="inner-card flex flex-col gap-2 min-h-[158px]">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--tx-label)' }}>
-          DRUM LEVEL
-        </div>
-        <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: status.color }}>
+      <div className="chart-card-header">
+        <div className="chart-card-title">DRUM LEVEL</div>
+        <div className={`status-pill ${status.label === 'CRITICAL' ? 'crit' : status.label === 'WARNING' ? 'warn' : 'ok'}`}>
           {status.label}
         </div>
       </div>

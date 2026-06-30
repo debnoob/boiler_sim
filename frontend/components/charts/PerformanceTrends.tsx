@@ -121,10 +121,9 @@ export function PerformanceTrends({ labels, efficiency, tubeHealth, heatRate, is
 
   return (
     <div className="inner-card">
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          System Performance Trends
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">System Performance Trends</div>
+        <span className="status-pill info">Live 60s</span>
       </div>
       <div className="relative h-[120px] w-full">
         <canvas ref={canvasRef} />

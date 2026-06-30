@@ -86,7 +86,7 @@ export function LiveTags() {
 
   return (
     <div id="live-tags-card" className="live-tags-card card p-6">
-      <h3 className="text-xs uppercase tracking-widest mb-4 font-bold" style={{ color: '#a16207' }}>
+      <h3 className="text-xs uppercase tracking-widest mb-4 font-bold" style={{ color: 'var(--accent-text)' }}>
         All Live Tags
       </h3>
 

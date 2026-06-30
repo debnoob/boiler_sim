@@ -74,10 +74,8 @@ export function AnomalyChart({ labels, data, score, isLight }: Props) {
 
   return (
     <div className="inner-card">
-      <div className="flex justify-between items-center mb-2">
-        <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          ML Anomaly Score History
-        </div>
+      <div className="chart-card-header">
+        <div className="chart-card-title">ML Anomaly Score History</div>
         <span className={scoreClass}>{score.toFixed(1)}%</span>
       </div>
       <div className="relative h-[120px] w-full">

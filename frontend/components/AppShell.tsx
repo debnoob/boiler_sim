@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
+import { Box, LayoutDashboard, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
 import { ChatWidget } from './ChatWidget';
 import { useNexusStore } from '@/lib/store';
 // import { exportToPowerBI } from '@/lib/exportToPowerBI';
@@ -105,10 +105,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   display: 'flex', alignItems: 'center', gap: 9,
                   padding: '8px 10px', borderRadius: 7,
                   fontSize: 13, fontWeight: 600,
-                  color: active ? '#fbbf24' : isHov ? 'var(--tx-primary)' : 'var(--tx-secondary)',
+                  color: active ? 'var(--accent-text)' : isHov ? 'var(--tx-primary)' : 'var(--tx-secondary)',
                   textDecoration: 'none', marginBottom: 1,
-                  background: active ? 'rgba(161,98,7,0.14)' : isHov ? 'var(--bg-elevated)' : 'transparent',
-                  border: `1px solid ${active ? 'rgba(161,98,7,0.28)' : 'transparent'}`,
+                  background: active ? 'var(--accent-muted)' : isHov ? 'var(--bg-elevated)' : 'transparent',
+                  border: `1px solid ${active ? 'var(--accent-border)' : 'transparent'}`,
                   transition: 'all 0.12s',
                 }}
               >
@@ -134,8 +134,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div style={{ fontSize: 11.5, padding: '3px 10px', color: 'var(--tx-label)', fontWeight: 700 }}>Nexus Demo Plant</div>
           <div style={{ fontSize: 11.5, padding: '3px 20px', color: 'var(--tx-secondary)' }}>Pumphouse 4</div>
-          <div style={{ fontSize: 11.5, padding: '5px 10px', color: '#fbbf24', fontWeight: 700, background: 'rgba(161,98,7,0.10)', borderRadius: 6, margin: '2px 4px' }}>
-            ⬡ Boiler Unit 01
+          <div style={{ fontSize: 11.5, padding: '5px 10px', color: 'var(--accent-text)', fontWeight: 700, background: 'var(--accent-muted)', borderRadius: 6, margin: '2px 4px', border: '1px solid var(--accent-border)' }}>
+            <Box size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 5 }} />
+            Boiler Unit 01
           </div>
         </div>
 

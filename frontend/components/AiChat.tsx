@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { Bot, Check, ChevronLeft, ChevronRight, FileText, FlaskConical, RefreshCw } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
 import { formatRich, preprocessMessage } from '@/lib/utils';
@@ -175,7 +176,7 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
   const atEnd = chipsRef.current ? chipsScrollLeft >= (chipsRef.current.scrollWidth - chipsRef.current.clientWidth - 4) : true;
 
   return (
-    <div className={`ai-chat-shell ${variant === 'floating' ? 'ai-chat-shell-floating' : ''}`}>
+    <div className={`ai-chat-shell ${aiStatus === 'analyzing' ? 'ai-chat-shell-active' : ''} ${variant === 'floating' ? 'ai-chat-shell-floating' : ''}`}>
       <div className="ai-chat-card">
 
         {/* Header */}
@@ -183,7 +184,9 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ position: 'relative', width: 38, height: 38 }}>
               <div style={{ position: 'absolute', inset: 0, borderRadius: 10, background: 'var(--accent)', opacity: 0.18, animation: 'ai-breathe 4.5s ease-in-out infinite' }} />
-              <div style={{ position: 'relative', width: 38, height: 38, borderRadius: 10, border: '1.5px solid var(--accent)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: '#fbbf24' }}>⬡</div>
+              <div style={{ position: 'relative', width: 38, height: 38, borderRadius: 10, border: '1.5px solid var(--accent)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-text)' }}>
+                <Bot size={17} strokeWidth={2.2} />
+              </div>
             </div>
             <div>
               <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--tx-primary)', letterSpacing: '-0.02em' }}>Nexus AI</div>
@@ -195,9 +198,9 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
           </div>
           {/* Status badge */}
           {aiStatus === 'analyzing' ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: 'rgba(251,191,36,0.1)', border: '1px solid #92400e' }}>
-              <span style={{ fontSize: 10, color: '#fbbf24' }}>⟳</span>
-              <span style={{ color: '#fde68a' }}>Analyzing</span>
+            <div className="status-pill warn">
+              <RefreshCw size={11} color="#fbbf24" />
+              <span>Analyzing</span>
             </div>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: 'rgba(16,185,129,0.1)', border: '1px solid #166534' }}>
@@ -275,12 +278,12 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
         {/* Quick chips */}
         <div className="relative" style={{ padding: '8px 14px 6px', background: 'var(--ai-msg-bg)', borderTop: '1px solid var(--ai-bubble-bd)' }}>
           {chipsScrollable && !atStart && (
-            <button onClick={() => scrollChips(-1)} style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', zIndex: 20, width: 22, height: 22, borderRadius: '50%', background: 'var(--ai-chip-bg)', border: '1px solid var(--accent)', color: '#fbbf24', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>‹</button>
+            <button onClick={() => scrollChips(-1)} style={{ position: 'absolute', left: 4, top: '50%', transform: 'translateY(-50%)', zIndex: 20, width: 22, height: 22, borderRadius: '50%', background: 'var(--ai-chip-bg)', border: '1px solid var(--accent)', color: 'var(--accent-text)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ChevronLeft size={14} /></button>
           )}
           {chipsScrollable && !atEnd && (
             <>
               <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 36, pointerEvents: 'none', zIndex: 10, background: 'linear-gradient(to right, transparent, var(--ai-msg-bg))' }} />
-              <button onClick={() => scrollChips(1)} style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', zIndex: 20, width: 22, height: 22, borderRadius: '50%', background: 'var(--ai-chip-bg)', border: '1px solid var(--accent)', color: '#fbbf24', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>›</button>
+              <button onClick={() => scrollChips(1)} style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', zIndex: 20, width: 22, height: 22, borderRadius: '50%', background: 'var(--ai-chip-bg)', border: '1px solid var(--accent)', color: 'var(--accent-text)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}><ChevronRight size={14} /></button>
             </>
           )}
           <div ref={chipsRef} className="flex gap-2 overflow-x-auto hide-scrollbar" onScroll={updateChipsScroll}>
@@ -373,6 +376,14 @@ function LiveContextItem({ label, value, tone }: { label: string; value: string;
   );
 }
 
+function AiAvatar() {
+  return (
+    <div className="ai-avatar">
+      <Bot size={14} strokeWidth={2.2} />
+    </div>
+  );
+}
+
 function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMessage; thinkingPhase: number; thinkingDots: string; woCount: number }) {
   const [typedContent, setTypedContent] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -400,7 +411,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
   if (msg.type === 'thinking') {
     return (
       <div className="flex items-start gap-2 slide-in">
-        <div className="ai-avatar">⬡</div>
+        <AiAvatar />
         <div className="ai-bubble" style={{ padding: '10px 14px', minWidth: 210 }}>
           {/* Reasoning header — like Claude */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
@@ -419,7 +430,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
                   border: `1px solid ${i < thinkingPhase ? '#4ade80' : i === thinkingPhase ? '#fbbf24' : 'var(--bd-inner)'}`,
                   color: i < thinkingPhase ? '#4ade80' : i === thinkingPhase ? '#fbbf24' : 'var(--tx-muted)',
                 }}>
-                  {i < thinkingPhase ? '✓' : i === thinkingPhase ? '…' : ''}
+                  {i < thinkingPhase ? <Check size={9} strokeWidth={3} /> : i === thinkingPhase ? '…' : ''}
                 </span>
                 <span style={{
                   color: i < thinkingPhase ? '#4ade80' : i === thinkingPhase ? 'var(--tx-primary)' : 'var(--tx-muted)',
@@ -447,7 +458,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
   if (msg.type === 'diagnosis') {
     return (
       <div className="flex items-start gap-2 slide-in">
-        <div className="ai-avatar">⬡</div>
+        <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <DiagnosisCard data={msg.data as DiagnosisPayload} woCount={woCount} ts={msg.timestamp} />
         </div>
@@ -458,7 +469,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
   if (msg.type === 'shift_report') {
     return (
       <div className="flex items-start gap-2 slide-in">
-        <div className="ai-avatar">⬡</div>
+        <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <ShiftReportCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
         </div>
@@ -469,7 +480,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
   if (msg.type === 'what_if') {
     return (
       <div className="flex items-start gap-2 slide-in">
-        <div className="ai-avatar">⬡</div>
+        <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <WhatIfCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
         </div>
@@ -486,7 +497,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
 
   return (
     <div className="flex items-start gap-2 slide-in">
-      <div className="ai-avatar">⬡</div>
+      <AiAvatar />
       <div className="ai-bubble ai-rich-msg">
         {allLines.map((line, i) => {
           const isBullet = /^[-*•]\s/.test(line) || /^\d+\.\s/.test(line);
@@ -605,7 +616,7 @@ function ShiftReportCard({ data, ts }: { data: AiResponsePayload; ts: string }) 
     <div style={{ background: 'var(--bg-ai)', borderRadius: '12px 12px 12px 4px', overflow: 'hidden', border: '1px solid var(--ai-bubble-bd)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--ai-bubble-bd)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#fbbf24', fontSize: 13 }}>RPT</span>
+          <FileText size={14} color="var(--accent)" />
           <span style={{ fontWeight: 700, color: 'var(--accent-text)', fontSize: 13 }}>End-of-Shift Report</span>
         </div>
         <span style={{ background: sColor, color: '#09090b', fontSize: 9, padding: '2px 9px', borderRadius: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{status}</span>
@@ -636,7 +647,7 @@ function ShiftReportCard({ data, ts }: { data: AiResponsePayload; ts: string }) 
         {data.follow_ups && data.follow_ups.length > 0 && (
           <div style={{ background: 'var(--ai-think-bg)', border: '1px solid var(--ai-bubble-bd)', borderRadius: 8, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700, marginBottom: 3 }}>Recommended Follow-ups</div>
-            {data.follow_ups.map((f, i) => <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11.5, color: 'var(--tx-label)', lineHeight: 1.5, padding: '2px 0' }}><span style={{ color: '#fbbf24', flexShrink: 0 }}>→</span><span dangerouslySetInnerHTML={{ __html: formatRich(String(f)) }} /></div>)}
+            {data.follow_ups.map((f, i) => <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11.5, color: 'var(--tx-label)', lineHeight: 1.5, padding: '2px 0' }}><span style={{ color: 'var(--accent)', flexShrink: 0 }}>→</span><span dangerouslySetInnerHTML={{ __html: formatRich(String(f)) }} /></div>)}
           </div>
         )}
       </div>
@@ -657,7 +668,7 @@ function WhatIfCard({ data, ts }: { data: AiResponsePayload; ts: string }) {
     <div style={{ background: 'var(--bg-ai)', borderRadius: '12px 12px 12px 4px', overflow: 'hidden', border: '1px solid var(--ai-bubble-bd)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--ai-bubble-bd)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: '#fbbf24', fontSize: 13 }}>SIM</span>
+          <FlaskConical size={14} color="var(--accent)" />
           <span style={{ fontWeight: 700, color: 'var(--accent-text)', fontSize: 13 }}>What-If Simulation</span>
         </div>
         <span style={{ background: rc, color: '#09090b', fontSize: 9, padding: '2px 9px', borderRadius: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{risk} risk</span>
@@ -671,7 +682,7 @@ function WhatIfCard({ data, ts }: { data: AiResponsePayload; ts: string }) {
             <div style={{ marginBottom: 10 }}>
               {data.steps.map((s, i) => (
                 <div key={i} style={{ display: 'flex', gap: 10, padding: '5px 0' }}>
-                  <div style={{ flexShrink: 0, width: 20, height: 20, borderRadius: '50%', background: 'var(--ai-user-bg)', border: '1px solid var(--accent)', color: '#fbbf24', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>{s.step || i + 1}</div>
+                  <div style={{ flexShrink: 0, width: 20, height: 20, borderRadius: '50%', background: 'var(--ai-user-bg)', border: '1px solid var(--accent)', color: 'var(--accent-text)', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>{s.step || i + 1}</div>
                   <div style={{ fontSize: 11.5, lineHeight: 1.5 }}>
                     <span style={{ color: 'var(--accent-text)', fontWeight: 600 }} dangerouslySetInnerHTML={{ __html: formatRich(String(s.event || '')) }} />
                     {s.consequence && <><br /><span style={{ color: 'var(--tx-secondary)' }}>→ <span dangerouslySetInnerHTML={{ __html: formatRich(String(s.consequence)) }} /></span></>}
@@ -684,7 +695,7 @@ function WhatIfCard({ data, ts }: { data: AiResponsePayload; ts: string }) {
         {data.operator_actions && data.operator_actions.length > 0 && (
           <div style={{ background: 'var(--ai-think-bg)', border: '1px solid var(--ai-bubble-bd)', borderRadius: 8, padding: '8px 10px' }}>
             <div style={{ fontSize: 9, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700, marginBottom: 3 }}>Operator Actions</div>
-            {data.operator_actions.map((a, i) => <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11.5, color: 'var(--tx-label)', lineHeight: 1.5, padding: '2px 0' }}><span style={{ color: '#fbbf24', flexShrink: 0 }}>→</span><span dangerouslySetInnerHTML={{ __html: formatRich(String(a)) }} /></div>)}
+            {data.operator_actions.map((a, i) => <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11.5, color: 'var(--tx-label)', lineHeight: 1.5, padding: '2px 0' }}><span style={{ color: 'var(--accent)', flexShrink: 0 }}>→</span><span dangerouslySetInnerHTML={{ __html: formatRich(String(a)) }} /></div>)}
           </div>
         )}
       </div>
