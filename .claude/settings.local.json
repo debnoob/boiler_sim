@@ -23,7 +23,8 @@
       "WebFetch(domain:app.oxmaint.ai)",
       "Bash(npx tsc *)",
       "Bash(kill %1)",
-      "Bash(curl -s http://localhost:3000)"
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@types/three": "^0.185.0",
     "chart.js": "^4.5.1",
     "lucide-react": "^1.22.0",
     "mqtt": "^5.15.1",
@@ -16,6 +17,7 @@
     "react": "19.2.4",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "19.2.4",
+    "three": "^0.185.0",
     "xlsx": "^0.18.5",
     "zustand": "^5.0.14"
   },

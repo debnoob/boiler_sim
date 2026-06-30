@@ -21,9 +21,13 @@ const SEVERITY_BADGE: Record<string, string> = {
 type UploadState = 'idle' | 'uploading' | 'done' | 'error';
 interface KbDoc { filename: string; doc_id: string; chunks_stored?: number; }
 
-export function AiChat() {
+interface AiChatProps {
+  variant?: 'panel' | 'floating';
+}
+
+export function AiChat({ variant = 'panel' }: AiChatProps) {
   const publish = usePublish();
-  const { chatMessages, aiStatus, addChatMessage, removeChatMessage, woCount } = useNexusStore();
+  const { chatMessages, aiStatus, addChatMessage, woCount, tags, anomalyScore, mode } = useNexusStore();
   const [input, setInput] = useState('');
   const [thinkingPhase, setThinkingPhase] = useState(0);
   const [thinkingDots, setThinkingDots] = useState('');
@@ -171,7 +175,7 @@ export function AiChat() {
   const atEnd = chipsRef.current ? chipsScrollLeft >= (chipsRef.current.scrollWidth - chipsRef.current.clientWidth - 4) : true;
 
   return (
-    <div className="ai-chat-shell">
+    <div className={`ai-chat-shell ${variant === 'floating' ? 'ai-chat-shell-floating' : ''}`}>
       <div className="ai-chat-card">
 
         {/* Header */}
@@ -208,6 +212,14 @@ export function AiChat() {
 
         <div className="ai-shimmer-line" />
 
+        {variant === 'floating' && (
+          <div className="ai-live-context" aria-label="Live boiler context">
+            <LiveContextItem label="Mode" value={mode} tone={mode === 'NORMAL' ? 'ok' : mode === 'FAULT' ? 'crit' : 'warn'} />
+            <LiveContextItem label="Pressure" value={tags ? `${tags.steam_pressure.toFixed(1)} bar` : '--'} tone={!tags ? 'neutral' : tags.steam_pressure > 13 ? 'crit' : tags.steam_pressure > 12 ? 'warn' : 'ok'} />
+            <LiveContextItem label="Efficiency" value={tags ? `${tags.efficiency.toFixed(1)}%` : '--'} tone={!tags ? 'neutral' : tags.efficiency < 75 ? 'crit' : tags.efficiency < 82 ? 'warn' : 'ok'} />
+            <LiveContextItem label="Anomaly" value={`${anomalyScore}%`} tone={anomalyScore > 70 ? 'crit' : anomalyScore > 30 ? 'warn' : 'ok'} />
+          </div>
+        )}
 
         {/* Messages */}
         <div ref={messagesRef} className="ai-messages-area hide-scrollbar">
@@ -347,6 +359,16 @@ export function AiChat() {
 
         </div>
       </div>
+    </div>
+  );
+}
+
+function LiveContextItem({ label, value, tone }: { label: string; value: string; tone: 'ok' | 'warn' | 'crit' | 'neutral' }) {
+  const color = tone === 'ok' ? '#4ade80' : tone === 'warn' ? '#fbbf24' : tone === 'crit' ? '#f87171' : 'var(--tx-secondary)';
+  return (
+    <div className="ai-live-context-item">
+      <span>{label}</span>
+      <strong style={{ color }}>{value}</strong>
     </div>
   );
 }
@@ -534,7 +556,21 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
         {data.recommended_action && (
           <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--bd-inner)', borderRadius: 8, padding: '8px 10px', marginTop: 8 }}>
             <div style={{ fontSize: 9, color: 'var(--tx-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: 2 }}>Recommended Action</div>
-            <p style={{ color: 'var(--tx-primary)', fontSize: 12 }}>{data.recommended_action}</p>
+            {typeof data.recommended_action === 'string' ? (
+              <p style={{ color: 'var(--tx-primary)', fontSize: 12 }}>{data.recommended_action}</p>
+            ) : Array.isArray(data.recommended_action) ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {data.recommended_action.map((action, i) => (
+                  <div key={i} style={{ color: 'var(--tx-primary)', fontSize: 12 }}>
+                    {typeof action === 'string' ? action : action.step ? `${action.step} (Urgency: ${action.urgency || 'N/A'}, Timing: ${action.timing || 'N/A'})` : JSON.stringify(action)}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p style={{ color: 'var(--tx-primary)', fontSize: 12 }}>
+                {(data.recommended_action as any).step ? `${(data.recommended_action as any).step} (Urgency: ${(data.recommended_action as any).urgency || 'N/A'}, Timing: ${(data.recommended_action as any).timing || 'N/A'})` : JSON.stringify(data.recommended_action)}
+              </p>
+            )}
           </div>
         )}
       </div>

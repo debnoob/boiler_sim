@@ -70,12 +70,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 16px 14px', borderBottom: '1px solid var(--bd-inner)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{
-              width: 34, height: 34, borderRadius: 8,
-              background: '#a16207', color: '#09090b',
-              fontWeight: 900, fontSize: 13, letterSpacing: -1,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>Nx</div>
+            <img src="/logo.png" alt="Nx" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'contain', flexShrink: 0 }} />
             <div>
               <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--accent-text)', letterSpacing: '-0.02em' }}>NEXUS OS</div>
               <div style={{ fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginTop: 1 }}>Boiler Intelligence</div>

@@ -174,7 +174,7 @@ function ActionRow({ action, isLatest }: { action: ControlActionPayload; isLates
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 3 }}>
-          <span style={{ fontSize: 11.5, fontWeight: 700, color: isLatest ? '#fde68a' : 'var(--tx-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: isLatest ? '#fbbf24' : 'var(--tx-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
             {action.headline}
           </span>
           <span style={{ fontSize: 9.5, color: 'var(--tx-muted)', flexShrink: 0 }}>{action.timestamp}</span>

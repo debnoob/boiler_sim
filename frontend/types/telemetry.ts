@@ -74,7 +74,7 @@ export interface DiagnosisPayload {
   probable_cause?: string;
   severity: string;
   explanation?: string;
-  recommended_action?: string;
+  recommended_action?: string | any;
   confidence?: number;
   pattern_note?: string | null;
   deviated_sensors?: DeviatedSensor[];

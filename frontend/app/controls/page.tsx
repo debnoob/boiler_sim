@@ -29,7 +29,7 @@ export default function ControlsPage() {
           </div>
           {lastAction ? (
             <div className="control-audit large">
-              <strong>{lastAction.headline}</strong>
+              <strong style={{ color: '#fbbf24' }}>{lastAction.headline}</strong>
               <p>{lastAction.reason}</p>
               <span>{interventionEvents.length} intervention event(s) logged this session</span>
             </div>

@@ -218,4 +218,5 @@ python engine/ai_analyst.py
 ```
 
 Switch scenarios from Terminal 1 by pressing `d` (degrade), `c` (critical), `f` (fault), `r` (reset).
-uvicorn rag_server:app --host localhost --port 8001
+
+

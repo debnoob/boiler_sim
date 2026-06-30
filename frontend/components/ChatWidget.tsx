@@ -60,7 +60,9 @@ export function ChatWidget() {
           borderRadius: 18,
           overflow: 'hidden',
           /* prominent shadow + amber glow */
-          boxShadow: '0 32px 64px -8px rgba(0,0,0,0.75), 0 0 0 1px rgba(161,98,7,0.35), 0 0 40px rgba(161,98,7,0.12)',
+          boxShadow: '0 30px 70px -14px rgba(0,0,0,0.78), 0 0 0 1px rgba(251,191,36,0.22), 0 0 38px rgba(161,98,7,0.16)',
+          backdropFilter: 'blur(18px) saturate(1.08)',
+          WebkitBackdropFilter: 'blur(18px) saturate(1.08)',
         }}
       >
         {/* Close strip at very top of panel */}
@@ -73,7 +75,6 @@ export function ChatWidget() {
           justifyContent: 'flex-end',
           paddingRight: 10,
           zIndex: 10,
-          background: 'linear-gradient(to bottom, var(--ai-header-bg) 60%, transparent)',
           pointerEvents: 'none',
         }}>
           <button
@@ -95,7 +96,7 @@ export function ChatWidget() {
           </button>
         </div>
 
-        <AiChat />
+        <AiChat variant="floating" />
       </div>
 
       {/* ── FAB toggle ─────────────────────────────────────── */}
@@ -130,7 +131,7 @@ export function ChatWidget() {
       >
         {open
           ? <X size={20} strokeWidth={2.5} />
-          : <span style={{ fontSize: 22, lineHeight: 1 }}>⬡</span>
+          : <img src="/logo.png" alt="Chat" style={{ width: 28, height: 28, objectFit: 'contain', borderRadius: 6 }} />
         }
 
         {/* Unread badge */}
