@@ -10,6 +10,7 @@ Ollama usage:
 import paho.mqtt.client as mqtt
 import json
 import os
+import re
 import time
 import uuid
 import requests
@@ -23,6 +24,12 @@ from deterministic_analyst import (
     build_physics_brief,
     format_brief_for_llm,
     HYPOTHESIS_LABELS,
+)
+from safety_policy import (
+    build_safety_context,
+    format_safety_context_for_prompt,
+    validate_diagnosis_payload,
+    validate_llm_text,
 )
 
 # ============================================================
@@ -61,7 +68,7 @@ PORT   = 1883
 
 # Ollama settings
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "my-boilerSim3:latest")
+OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
 OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/chat"
 OLLAMA_NUM_CTX  = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 
@@ -101,6 +108,8 @@ THRESHOLDS = {
     "steam_pressure_trip": 13.5,
     "drum_level_low": 280.0,
     "drum_level_critical": 200.0,
+    "drum_level_high": 600.0,
+    "drum_level_high_critical": 720.0,
     "flue_gas_temp_high": 240.0,
     "o2_percent_high": 5.5,
     "o2_percent_low": 2.0,
@@ -113,12 +122,240 @@ OPTIMAL = {
     "air_fuel_ratio": 11.0,
 }
 
+TAG_METADATA = {
+    "steam_pressure": {
+        "label": "Steam pressure",
+        "unit": "bar",
+        "aliases": ("steam pressure", "pressure", "boiler pressure"),
+        "decimals": 2,
+        "high_warn": THRESHOLDS["steam_pressure_high"],
+        "high_crit": THRESHOLDS["steam_pressure_trip"],
+        "status": "higher",
+    },
+    "steam_temperature": {
+        "label": "Steam temperature",
+        "unit": "°C",
+        "aliases": ("steam temperature", "steam temp", "temperature", "temp"),
+        "decimals": 1,
+    },
+    "steam_flow": {
+        "label": "Steam flow",
+        "unit": "kg/hr",
+        "aliases": ("steam flow", "steam output", "steam production"),
+        "decimals": 0,
+    },
+    "drum_level": {
+        "label": "Drum level",
+        "unit": "mm",
+        "aliases": ("drum level", "water level", "level"),
+        "decimals": 1,
+        "low_warn": THRESHOLDS["drum_level_low"],
+        "low_crit": THRESHOLDS["drum_level_critical"],
+        "high_warn": THRESHOLDS["drum_level_high"],
+        "high_crit": THRESHOLDS["drum_level_high_critical"],
+        "status": "band",
+        "range_note": "Dashboard range is 0-800 mm; normal control target is 400 mm.",
+    },
+    "feedwater_flow": {
+        "label": "Feedwater flow",
+        "unit": "kg/hr",
+        "aliases": ("feedwater flow", "feed water flow", "water flow"),
+        "decimals": 0,
+    },
+    "feedwater_temp": {
+        "label": "Feedwater temperature",
+        "unit": "°C",
+        "aliases": ("feedwater temperature", "feedwater temp", "feed water temperature", "feed water temp"),
+        "decimals": 1,
+    },
+    "fuel_flow": {
+        "label": "Fuel flow",
+        "unit": "m³/hr",
+        "aliases": ("fuel flow", "gas flow", "fuel"),
+        "decimals": 1,
+    },
+    "air_flow": {
+        "label": "Air flow",
+        "unit": "m³/hr",
+        "aliases": ("air flow", "combustion air"),
+        "decimals": 0,
+    },
+    "o2_percent": {
+        "label": "O₂",
+        "unit": "%",
+        "aliases": ("o2", "o₂", "oxygen", "oxygen percent", "oxygen percentage"),
+        "decimals": 2,
+        "low_warn": THRESHOLDS["o2_percent_low"],
+        "high_warn": OPTIMAL["o2_percent_high"],
+        "high_crit": THRESHOLDS["o2_percent_high"],
+        "status": "band",
+    },
+    "flue_gas_temp": {
+        "label": "Flue gas temperature",
+        "unit": "°C",
+        "aliases": ("flue gas temperature", "flue gas temp", "stack temperature", "stack temp", "fgt"),
+        "decimals": 1,
+        "high_warn": 220.0,
+        "high_crit": THRESHOLDS["flue_gas_temp_high"],
+        "status": "higher",
+    },
+    "tube_health": {
+        "label": "Tube health",
+        "unit": "%",
+        "aliases": ("tube health", "tube condition", "tube"),
+        "decimals": 1,
+        "low_warn": 80.0,
+        "low_crit": THRESHOLDS["tube_health_inspect"],
+        "status": "lower",
+    },
+    "efficiency": {
+        "label": "Efficiency",
+        "unit": "%",
+        "aliases": ("efficiency", "boiler efficiency"),
+        "decimals": 1,
+        "low_warn": 82.0,
+        "low_crit": 75.0,
+        "status": "lower",
+    },
+    "heat_rate": {
+        "label": "Heat rate",
+        "unit": "kJ/kg",
+        "aliases": ("heat rate", "heatrate"),
+        "decimals": 0,
+    },
+    "flame_status": {
+        "label": "Flame status",
+        "unit": "",
+        "aliases": ("flame", "flame status", "burner flame"),
+        "decimals": 0,
+    },
+    "safety_valve": {
+        "label": "Safety valve",
+        "unit": "",
+        "aliases": ("safety valve", "relief valve"),
+        "decimals": 0,
+    },
+}
+
 
 def _as_float(value, default=0.0):
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _fmt_value(value, decimals, unit):
+    if isinstance(value, bool):
+        return "ON" if value else "OFF"
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "--"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if decimals == 0:
+        text = f"{numeric:.0f}"
+    else:
+        text = f"{numeric:.{decimals}f}"
+    return f"{text} {unit}".strip()
+
+
+def _status_for_tag(tag, value):
+    meta = TAG_METADATA.get(tag, {})
+    if tag == "flame_status":
+        return "ON - burner flame proven." if value else "OFF - burner flame not proven."
+    if tag == "safety_valve":
+        return "OPEN - safety valve is lifting." if value else "CLOSED - normal standby state."
+
+    val = _as_float(value, None)
+    if val is None:
+        return "Status unavailable."
+
+    low_crit = meta.get("low_crit")
+    low_warn = meta.get("low_warn")
+    high_warn = meta.get("high_warn")
+    high_crit = meta.get("high_crit")
+
+    if low_crit is not None and val < low_crit:
+        return f"CRITICAL low: below {low_crit:g} {meta.get('unit', '')}".strip()
+    if low_warn is not None and val < low_warn:
+        return f"Low warning: below {low_warn:g} {meta.get('unit', '')}".strip()
+    if high_crit is not None and val >= high_crit:
+        return f"CRITICAL high: at/above {high_crit:g} {meta.get('unit', '')}".strip()
+    if high_warn is not None and val > high_warn:
+        return f"High warning: above {high_warn:g} {meta.get('unit', '')}".strip()
+    return "Normal against configured dashboard thresholds."
+
+
+def _find_requested_tag(question):
+    q = question.lower()
+    for tag, meta in TAG_METADATA.items():
+        for alias in meta["aliases"]:
+            pattern = r"(?<![a-z0-9])" + re.escape(alias.lower()) + r"(?![a-z0-9])"
+            if re.search(pattern, q):
+                return tag
+    return None
+
+
+def _is_current_value_question(question, tag):
+    if not tag:
+        return False
+    q = question.lower()
+    current_terms = (
+        "what is", "what's", "current", "now", "right now", "reading",
+        "value", "show", "tell me", "how much", "status"
+    )
+    diagnostic_terms = (
+        "why", "cause", "recommend", "should", "what should", "fix",
+        "action", "diagnose", "predict", "fail", "failure", "what if",
+        "how to", "explain", "because"
+    )
+    return any(term in q for term in current_terms) and not any(term in q for term in diagnostic_terms)
+
+
+def build_current_value_answer(question, latest_reading):
+    tag = _find_requested_tag(question)
+    if not _is_current_value_question(question, tag):
+        return None
+    if not latest_reading:
+        return "No live telemetry has arrived yet, so I cannot read that value right now."
+
+    tags = latest_reading.get("tags", {})
+    if tag not in tags:
+        return None
+
+    meta = TAG_METADATA[tag]
+    value = tags.get(tag)
+    unit = meta.get("unit", "")
+    decimals = meta.get("decimals", 1)
+    value_text = _fmt_value(value, decimals, unit)
+    label = meta["label"]
+
+    lines = [f"**{label}** is **{value_text}** right now."]
+
+    if tag in BASELINES and isinstance(value, (int, float)):
+        baseline = BASELINES[tag]
+        delta = float(value) - baseline
+        pct = (delta / baseline * 100.0) if baseline else 0.0
+        direction = "above" if delta > 0 else "below" if delta < 0 else "at"
+        if abs(delta) < 0.01:
+            lines.append(f"Baseline/setpoint is **{_fmt_value(baseline, decimals, unit)}**; current value is essentially at baseline.")
+        else:
+            lines.append(
+                f"Baseline/setpoint is **{_fmt_value(baseline, decimals, unit)}**; "
+                f"current value is **{_fmt_value(abs(delta), decimals, unit)} {direction}** baseline ({pct:+.1f}%)."
+            )
+
+    lines.append(f"Status: {_status_for_tag(tag, value)}")
+
+    if meta.get("range_note"):
+        lines.append(meta["range_note"])
+
+    lines.append("I am only reporting the live value here; ask for diagnosis or recommended actions if you want next steps.")
+    return "\n".join(lines)
 
 # ============================================================
 # TELEMETRY RING BUFFER (last N minutes of context)
@@ -553,6 +790,11 @@ class AIAnalyst:
         samples = self.telemetry.get_recent_samples(last_n=30)
         brief   = build_physics_brief(samples)
         physics_block = format_brief_for_llm(brief, context="diagnosis")
+        safety_ctx = build_safety_context(
+            f"Diagnose anomaly: {brief.hypothesis_label}",
+            samples,
+        )
+        safety_block = format_safety_context_for_prompt(safety_ctx)
         print(f"[AI Analyst] 🧮 Deterministic verdict: {brief.hypothesis_label} [{brief.confidence}]")
         if brief.pid_issues:
             for pi in brief.pid_issues:
@@ -575,6 +817,8 @@ class AIAnalyst:
                     "You are a boiler maintenance engineer AI for NEXUS OS. "
                     "A deterministic physics engine has already classified the fault — "
                     "your job is to narrate the diagnosis and confirm the corrective actions. "
+                    "The SAFETY POLICY LAYER is mandatory: do not include blocked action classes, "
+                    "and if evidence is contradictory, say so instead of forcing a single cause. "
                     "Return your response as JSON with: "
                     "\"probable_cause\" (string, use the provided hypothesis label exactly), "
                     "\"severity\" (string: critical/high/warning/low), "
@@ -590,6 +834,7 @@ class AIAnalyst:
                 "content": (
                     f"Anomaly score: {score}% on BOILER-01.\n\n"
                     f"{physics_block}\n\n"
+                    f"{safety_block}\n\n"
                     f"{manual_block}"
                     f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
                     "Return the incident diagnosis as JSON."
@@ -604,6 +849,9 @@ class AIAnalyst:
                 # Guarantee the deterministic hypothesis wins even if LLM drifts
                 if "probable_cause" not in diagnosis or not diagnosis["probable_cause"]:
                     diagnosis["probable_cause"] = brief.hypothesis_label
+                diagnosis, blocked = validate_diagnosis_payload(diagnosis, safety_ctx)
+                if blocked:
+                    print(f"[AI Analyst] 🛡 Safety policy blocked {len(blocked)} diagnosis item(s)")
                 diagnosis["_deterministic_hypothesis"] = brief.primary_hypothesis
                 diagnosis["_pid_issues"] = [
                     {"loop": pi.loop, "symptom": pi.symptom, "fix": pi.recommended_action}
@@ -638,6 +886,9 @@ class AIAnalyst:
                 ],
                 "_llm_unavailable": True,
             }
+            fallback, blocked = validate_diagnosis_payload(fallback, safety_ctx)
+            if blocked:
+                print(f"[AI Analyst] 🛡 Safety policy blocked {len(blocked)} fallback item(s)")
             self.mqtt_client.publish(TOPIC_DIAGNOSIS, json.dumps(fallback), qos=1)
             self.memory.record_diagnosis(fallback)
             print("[AI Analyst] ⚠ LLM unavailable — deterministic-only diagnosis published")
@@ -666,6 +917,11 @@ class AIAnalyst:
         samples = self.telemetry.get_recent_samples(last_n=30)
         brief   = build_physics_brief(samples)
         physics_block = format_brief_for_llm(brief, context="diagnosis")
+        safety_ctx = build_safety_context(
+            f"Diagnose alert {payload.get('tag','')}: {payload.get('message','')}",
+            samples,
+        )
+        safety_block = format_safety_context_for_prompt(safety_ctx)
         print(f"[AI Analyst] 🧮 Deterministic verdict: {brief.hypothesis_label} [{brief.confidence}]")
         if brief.pid_issues:
             for pi in brief.pid_issues:
@@ -688,6 +944,8 @@ class AIAnalyst:
                     "You are a boiler maintenance engineer AI for NEXUS OS. "
                     "A deterministic physics engine has classified the fault — your job is to "
                     "confirm, explain, and prioritise the corrective actions based on the alert context. "
+                    "The SAFETY POLICY LAYER is mandatory: do not include blocked action classes, "
+                    "and if evidence is contradictory, say so instead of forcing a single cause. "
                     "When BOILER MANUAL EXCERPTS are provided, cite them. "
                     "Cross-reference SESSION INCIDENT HISTORY: if this alert repeats, flag it in pattern_note. "
                     "Return JSON with: probable_cause, severity (critical/high/warning/low), "
@@ -706,6 +964,7 @@ class AIAnalyst:
                     f"  Tag      : {payload.get('tag','')} = {payload.get('value','')} "
                     f"(threshold {payload.get('threshold','?')})\n\n"
                     f"{physics_block}\n\n"
+                    f"{safety_block}\n\n"
                     f"{manual_block}"
                     f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
                     "Return the incident diagnosis as JSON."
@@ -719,6 +978,9 @@ class AIAnalyst:
                 diagnosis = json.loads(response)
                 if "probable_cause" not in diagnosis or not diagnosis["probable_cause"]:
                     diagnosis["probable_cause"] = brief.hypothesis_label
+                diagnosis, blocked = validate_diagnosis_payload(diagnosis, safety_ctx)
+                if blocked:
+                    print(f"[AI Analyst] 🛡 Safety policy blocked {len(blocked)} alert diagnosis item(s)")
                 diagnosis["_deterministic_hypothesis"] = brief.primary_hypothesis
                 diagnosis["_pid_issues"] = [
                     {"loop": pi.loop, "symptom": pi.symptom, "fix": pi.recommended_action}
@@ -754,6 +1016,9 @@ class AIAnalyst:
                 ],
                 "_llm_unavailable": True,
             }
+            fallback, blocked = validate_diagnosis_payload(fallback, safety_ctx)
+            if blocked:
+                print(f"[AI Analyst] 🛡 Safety policy blocked {len(blocked)} alert fallback item(s)")
             self.mqtt_client.publish(TOPIC_DIAGNOSIS, json.dumps(fallback), qos=1)
             self.memory.record_diagnosis(fallback)
             print("[AI Analyst] ⚠ LLM unavailable — deterministic-only diagnosis published")
@@ -830,6 +1095,22 @@ class AIAnalyst:
         if not question:
             return
 
+        latest_samples = self.telemetry.get_recent_samples(last_n=1)
+        current_value_answer = build_current_value_answer(
+            question,
+            latest_samples[-1] if latest_samples else None,
+        )
+        if current_value_answer:
+            print(f"[AI Analyst] 📟 Deterministic value answer: {question[:70]}")
+            self.chat_history.append({"role": "user", "content": question})
+            self.chat_history.append({"role": "assistant", "content": current_value_answer})
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                "answer": current_value_answer,
+                "timestamp": time.time(),
+            }), qos=1)
+            self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+            return
+
         # ── GUARDRAIL: reject off-topic questions immediately ──────────────
         if not self._is_on_domain(question):
             print(f"[AI Analyst] 🚫 Off-topic question blocked: {question[:80]}")
@@ -857,6 +1138,8 @@ class AIAnalyst:
         # ── Deterministic pre-analysis ─────────────────────────────────────
         samples = self.telemetry.get_recent_samples(last_n=30)
         brief   = build_physics_brief(samples)
+        safety_ctx = build_safety_context(question, samples)
+        safety_block = format_safety_context_for_prompt(safety_ctx)
 
         # Detect if question is efficiency-focused for richer context injection
         q_lower = question.lower()
@@ -893,6 +1176,9 @@ class AIAnalyst:
                     "You are a boiler operations expert AI for NEXUS OS monitoring BOILER-01. "
                     "A deterministic physics engine has already computed the current plant state — "
                     "you MUST anchor your answer to the specific sensor values and computed findings provided. "
+                    "The SAFETY POLICY LAYER is mandatory and overrides any generic maintenance habit. "
+                    "If it marks evidence as contradictory, say the telemetry is inconsistent and prefer verification. "
+                    "Never include blocked action classes. "
                     "Do NOT give generic boiler theory. "
                     "Cite actual numbers: 'efficiency is 73.2%, 16.1% below the 87% baseline because...' "
                     "FORMATTING (strict): "
@@ -908,6 +1194,7 @@ class AIAnalyst:
             "role": "user",
             "content": (
                 f"{physics_block}\n\n"
+                f"{safety_block}\n\n"
                 f"{manual_block}"
                 f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
                 f"OPERATOR QUESTION: {question}"
@@ -916,6 +1203,9 @@ class AIAnalyst:
 
         response = call_llm(messages, json_mode=False, max_tokens=250)
         if response:
+            response, blocked = validate_llm_text(response, safety_ctx)
+            if blocked:
+                print(f"[AI Analyst] 🛡 Safety policy blocked {len(blocked)} chat item(s)")
             self.chat_history.append({"role": "user", "content": question})
             self.chat_history.append({"role": "assistant", "content": response})
             chat_response = {

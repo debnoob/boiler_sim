@@ -179,9 +179,9 @@ class BoilerState:
         self.soot_blow_pending       = False  # one-shot partial UA recovery
         self.soot_blow_count         = 0
 
-        # ODE state vector: [P_drum (bar), m_water (kg), m_steam (kg)]
-        # Initial conditions at 10 bar, drum ~60% full
-        self.ode_state = [10.0, 18000.0, 120.0]
+        # ODE state vector: [P_drum (bar), m_water (kg), m_steam (kg)].
+        # m_water is set by BoilerPhysicsEngine after steam-table density is available.
+        self.ode_state = [10.0, 0.0, 120.0]
 
         # Derived sensor values updated each tick
         self.steam_pressure    = 10.0
@@ -227,6 +227,7 @@ class BoilerPhysicsEngine:
     def __init__(self):
         self.state = BoilerState()
         self.faults = FaultInjector()
+        self.reset_ode_inventory()
 
         # Three PID loops
         self.pressure_pid  = PIDController(Kp=2.0,  Ki=0.1,  Kd=0.5,
@@ -245,6 +246,19 @@ class BoilerPhysicsEngine:
         buffer.append(smoothed)
         buffer.pop(0)
         return smoothed
+
+    def water_mass_for_level(self, level_mm, pressure_bar):
+        """Convert a 0-800 mm drum level into saturated-water mass."""
+        props = self.get_steam_properties(pressure_bar, quality=0)
+        rho_l = 1.0 / props["v"] if props["v"] > 0 else 900.0
+        level_fraction = min(max(level_mm / 800.0, 0.0), 1.0)
+        return level_fraction * self.DRUM_VOLUME_M3 * rho_l
+
+    def reset_ode_inventory(self):
+        """Keep initial ODE water inventory consistent with the 400 mm level setpoint."""
+        pressure = self.state.steam_pressure_setpoint
+        water_mass = self.water_mass_for_level(self.state.drum_level_setpoint, pressure)
+        self.state.ode_state = [pressure, water_mass, 120.0]
 
     def get_steam_properties(self, pressure_bar, temp_C=None, quality=None):
         """Query IAPWS-97 real steam tables."""
@@ -385,7 +399,9 @@ class BoilerPhysicsEngine:
 
         # Clamp physical limits
         s.ode_state[0] = max(0.5, min(s.ode_state[0], 20.0))   # pressure bar
-        s.ode_state[1] = max(100.0, min(s.ode_state[1], 35000.0))  # water mass kg
+        max_water_mass = self.water_mass_for_level(800.0, s.ode_state[0])
+        min_water_mass = self.water_mass_for_level(20.0, s.ode_state[0])
+        s.ode_state[1] = max(min_water_mass, min(s.ode_state[1], max_water_mass))  # water mass kg
         s.ode_state[2] = max(0.0,   min(s.ode_state[2], 5000.0))   # steam mass kg
 
         P_drum   = s.ode_state[0]
@@ -667,6 +683,12 @@ class NexusMQTTPublisher:
         elif tags["drum_level"] < 280:
             self.publish_alert("HIGH", "Drum Level low — check feedwater supply",
                                "drum_level", tags["drum_level"], 280)
+        elif tags["drum_level"] > 720:
+            self.publish_alert("CRITICAL", "Drum Level critically high — carryover risk",
+                               "drum_level", tags["drum_level"], 720)
+        elif tags["drum_level"] > 600:
+            self.publish_alert("HIGH", "Drum Level high — verify feedwater control",
+                               "drum_level", tags["drum_level"], 600)
 
         if tags["steam_pressure"] > 13.0:
             self.publish_alert("CRITICAL", "Steam pressure high — safety valve may lift",
@@ -793,6 +815,7 @@ class NexusMQTTPublisher:
                         sys.stdout.flush()
                     elif cmd == 'r':
                         self.engine.state.reset()
+                        self.engine.reset_ode_inventory()
                         self.engine.faults.reset()
                         self.engine.pressure_pid.reset()
                         self.engine.drumlevel_pid.reset()

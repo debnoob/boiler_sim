@@ -122,8 +122,11 @@ export default function OverviewPage() {
     {
       label: 'Drum Level', unit: 'mm', decimals: 0,
       current: tags?.drum_level ?? null, base: kpiBaseline?.drum_level ?? null,
-      series: kpiSeries.datasets[1], polarity: 'neutral', reference: 'Warn < 280 · Crit < 200 mm',
-      status: !tags ? 'neutral' : tags.drum_level < 200 ? 'crit' : tags.drum_level < 280 ? 'warn' : 'ok',
+      series: kpiSeries.datasets[1], polarity: 'neutral', reference: 'Normal 280-600 · Crit <200/>720 mm',
+      status: !tags ? 'neutral'
+        : tags.drum_level < 200 || tags.drum_level > 720 ? 'crit'
+        : tags.drum_level < 280 || tags.drum_level > 600 ? 'warn'
+        : 'ok',
     },
     {
       label: 'Efficiency', unit: '%', decimals: 1,

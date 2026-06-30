@@ -510,6 +510,29 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
   );
 }
 
+/** Safely converts any LLM output value (string | object | array) to a displayable string. */
+function normalizeToString(val: unknown): string {
+  if (val == null) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (Array.isArray(val)) {
+    return val.map((item, i) => `${i + 1}. ${normalizeToString(item)}`).join('\n');
+  }
+  if (typeof val === 'object') {
+    // Try common text-carrying keys first, then fall back to JSON
+    const obj = val as Record<string, unknown>;
+    const text = obj.action ?? obj.step ?? obj.description ?? obj.text ?? obj.message ?? obj.recommendation;
+    if (text != null) {
+      const extras: string[] = [];
+      if (obj.urgency) extras.push(`Urgency: ${obj.urgency}`);
+      if (obj.timing)  extras.push(`Timing: ${obj.timing}`);
+      return extras.length ? `${normalizeToString(text)} (${extras.join(', ')})` : normalizeToString(text);
+    }
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
+
 function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount: number; ts: string }) {
   if (!data) return null;
   const severity = (data.severity || 'warning').toLowerCase();
@@ -529,11 +552,11 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
       </div>
       <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--tx-label)', lineHeight: 1.6 }}>
         <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--tx-primary)' }}>{data.probable_cause || 'Boiler Anomaly'}</div>
-        {data.explanation && <p style={{ color: 'var(--tx-secondary)', marginBottom: 8 }}>{data.explanation}</p>}
+        {data.explanation && <p style={{ color: 'var(--tx-secondary)', marginBottom: 8 }}>{normalizeToString(data.explanation)}</p>}
         {data.pattern_note && (
           <div style={{ display: 'flex', gap: 8, background: 'var(--pattern-bg)', border: '1px solid var(--pattern-bd)', borderRadius: 8, padding: '8px 10px', marginBottom: 8, fontSize: 11.5, color: 'var(--pattern-tx)', lineHeight: 1.5 }}>
             <span style={{ color: 'var(--pattern-icon)', fontSize: 11, marginTop: 2, flexShrink: 0 }}>↻</span>
-            <span><span style={{ fontWeight: 700, color: 'var(--pattern-label)' }}>Pattern detected:</span> {data.pattern_note}</span>
+            <span><span style={{ fontWeight: 700, color: 'var(--pattern-label)' }}>Pattern detected:</span> {normalizeToString(data.pattern_note)}</span>
           </div>
         )}
         {data.deviated_sensors && data.deviated_sensors.length > 0 && (
@@ -553,24 +576,10 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
             })}
           </div>
         )}
-        {data.recommended_action && (
+        {data.recommended_action != null && (
           <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--bd-inner)', borderRadius: 8, padding: '8px 10px', marginTop: 8 }}>
             <div style={{ fontSize: 9, color: 'var(--tx-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: 2 }}>Recommended Action</div>
-            {typeof data.recommended_action === 'string' ? (
-              <p style={{ color: 'var(--tx-primary)', fontSize: 12 }}>{data.recommended_action}</p>
-            ) : Array.isArray(data.recommended_action) ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {data.recommended_action.map((action, i) => (
-                  <div key={i} style={{ color: 'var(--tx-primary)', fontSize: 12 }}>
-                    {typeof action === 'string' ? action : action.step ? `${action.step} (Urgency: ${action.urgency || 'N/A'}, Timing: ${action.timing || 'N/A'})` : JSON.stringify(action)}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p style={{ color: 'var(--tx-primary)', fontSize: 12 }}>
-                {(data.recommended_action as any).step ? `${(data.recommended_action as any).step} (Urgency: ${(data.recommended_action as any).urgency || 'N/A'}, Timing: ${(data.recommended_action as any).timing || 'N/A'})` : JSON.stringify(data.recommended_action)}
-              </p>
-            )}
+            <p style={{ color: 'var(--tx-primary)', fontSize: 12, whiteSpace: 'pre-line' }}>{normalizeToString(data.recommended_action)}</p>
           </div>
         )}
       </div>

@@ -65,36 +65,7 @@ export function ChatWidget() {
           WebkitBackdropFilter: 'blur(18px) saturate(1.08)',
         }}
       >
-        {/* Close strip at very top of panel */}
-        <div style={{
-          position: 'absolute',
-          top: 0, left: 0, right: 0,
-          height: 36,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'flex-end',
-          paddingRight: 10,
-          zIndex: 10,
-          pointerEvents: 'none',
-        }}>
-          <button
-            onClick={() => setOpen(false)}
-            aria-label="Close chat"
-            style={{
-              pointerEvents: 'auto',
-              width: 24, height: 24,
-              borderRadius: '50%',
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--bd-inner)',
-              color: 'var(--tx-muted)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            <X size={12} strokeWidth={2.5} />
-          </button>
-        </div>
+        {/* Close button strip removed as requested */}
 
         <AiChat variant="floating" />
       </div>

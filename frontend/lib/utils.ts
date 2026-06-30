@@ -30,6 +30,8 @@ export function formatEta(s: number): string {
 export function calcRisk(t: TelemetryTags, degradation: number): number {
   let risk = degradation * 100;
   if (t.drum_level < 280) risk += 15;
+  if (t.drum_level > 600) risk += 15;
+  if (t.drum_level > 720) risk += 10;
   if (t.steam_pressure > 13) risk += 20;
   if (t.tube_health < 70) risk += 10;
   if (t.flame_status === 0) risk = 100;
@@ -192,4 +194,3 @@ export function formatRich(text: string): string {
 
   return html;
 }
-

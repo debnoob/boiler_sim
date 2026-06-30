@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useNexusStore } from '@/lib/store';
 import { calcRisk, getRiskConfig, getCombustionAdvice, formatEta, calcDerivedMetrics } from '@/lib/utils';
 import { GaugeChart } from './charts/GaugeChart';
+import { DrumLevelGauge } from './charts/DrumLevelGauge';
 import { O2Chart } from './charts/O2Chart';
 import { PerformanceTrends } from './charts/PerformanceTrends';
 import { ThermalCoupling } from './charts/ThermalCoupling';
@@ -59,12 +60,6 @@ export function PredictivePanel() {
     : tags.steam_pressure > 12 ? '#f59e0b'
     : '#10b981';
 
-  // Level gauge color
-  const lvlColor = !tags ? '#10b981'
-    : tags.drum_level < 200 ? '#ef4444'
-    : tags.drum_level < 280 ? '#f59e0b'
-    : '#10b981';
-
   // Efficiency gauge color
   const effColor = !tags ? '#10b981'
     : tags.efficiency < 75 ? '#ef4444'
@@ -76,6 +71,19 @@ export function PredictivePanel() {
     : derived.boilerLoad > 100 ? '#ef4444'
     : derived.boilerLoad > 92 ? '#f59e0b'
     : '#10b981';
+
+  const pressureStatus = !tags ? 'NO DATA'
+    : tags.steam_pressure > 13 ? 'CRITICAL'
+    : tags.steam_pressure > 12 ? 'WARNING'
+    : 'NORMAL';
+  const efficiencyStatus = !tags ? 'NO DATA'
+    : tags.efficiency < 75 ? 'CRITICAL'
+    : tags.efficiency < 82 ? 'WARNING'
+    : 'NORMAL';
+  const loadStatus = !derived ? 'NO DATA'
+    : derived.boilerLoad > 100 ? 'CRITICAL'
+    : derived.boilerLoad > 92 ? 'WARNING'
+    : 'NORMAL';
 
   // Forecast state
   const isTrendingDown = healthHistory.length >= 10 && forecastDeadline != null;
@@ -221,20 +229,30 @@ export function PredictivePanel() {
               color={pressColor}
               label="STEAM PRESSURE"
               unit="bar"
+              setpoint={10}
+              statusLabel={pressureStatus}
+              reference="SP 10 · Warn >12 · Crit >13 bar"
+              zones={[
+                { from: 0, to: 12, color: 'rgba(16,185,129,0.55)', label: 'Normal' },
+                { from: 12, to: 13, color: 'rgba(245,158,11,0.65)', label: 'Warning' },
+                { from: 13, to: 16, color: 'rgba(239,68,68,0.6)', label: 'Critical' },
+              ]}
             />
-            <GaugeChart
-              value={tags?.drum_level ?? 0}
-              maxValue={600}
-              color={lvlColor}
-              label="DRUM LEVEL"
-              unit="mm"
-            />
+            <DrumLevelGauge value={tags?.drum_level ?? 0} />
             <GaugeChart
               value={tags?.efficiency ?? 0}
               maxValue={100}
               color={effColor}
               label="EFFICIENCY"
               unit="%"
+              setpoint={87}
+              statusLabel={efficiencyStatus}
+              reference="Target 87 · Warn <82 · Crit <75%"
+              zones={[
+                { from: 0, to: 75, color: 'rgba(239,68,68,0.6)', label: 'Critical' },
+                { from: 75, to: 82, color: 'rgba(245,158,11,0.65)', label: 'Warning' },
+                { from: 82, to: 100, color: 'rgba(16,185,129,0.55)', label: 'Normal' },
+              ]}
             />
             <GaugeChart
               value={derived?.boilerLoad ?? 0}
@@ -242,6 +260,14 @@ export function PredictivePanel() {
               color={loadColor}
               label="BOILER LOAD"
               unit="%"
+              setpoint={88}
+              statusLabel={loadStatus}
+              reference="Rated 2600 kg/hr · Warn >92 · Crit >100%"
+              zones={[
+                { from: 0, to: 92, color: 'rgba(16,185,129,0.55)', label: 'Normal' },
+                { from: 92, to: 100, color: 'rgba(245,158,11,0.65)', label: 'Warning' },
+                { from: 100, to: 120, color: 'rgba(239,68,68,0.6)', label: 'Critical' },
+              ]}
             />
           </div>
           {/* Row 1b: O2 + derived KPI strip */}

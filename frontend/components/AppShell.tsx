@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { LayoutDashboard, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
 import { ChatWidget } from './ChatWidget';
 import { useNexusStore } from '@/lib/store';
-import { exportToPowerBI } from '@/lib/exportToPowerBI';
+// import { exportToPowerBI } from '@/lib/exportToPowerBI';
 
 const NAV = [
   { href: '/',           label: 'Overview',                icon: LayoutDashboard },
@@ -147,7 +147,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* ── Main ─────────────────────────────────────────────── */}
-      <div style={{ marginLeft: isSidebarOpen ? SIDEBAR_W : 0, transition: 'margin-left 0.3s ease', flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+      <div style={{
+        marginLeft: isSidebarOpen ? SIDEBAR_W : 0,
+        width: isSidebarOpen ? `calc(100% - ${SIDEBAR_W}px)` : '100%',
+        transition: 'margin-left 0.3s ease, width 0.3s ease',
+        display: 'flex', flexDirection: 'column', minHeight: '100vh',
+        minWidth: 0,
+      }}>
 
         {/* Top bar */}
         <header style={{
@@ -188,13 +194,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               {mode}
             </span>
             <span style={{ fontSize: 11, color: 'var(--tx-muted)', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
-            <button
+            {/* <button
               disabled={!tags}
               onClick={() => exportToPowerBI(useNexusStore.getState())}
               style={{ padding: '5px 12px', fontSize: 12, fontWeight: 700, borderRadius: 6, background: '#1e3a5f', color: '#c7dcf5', border: '1px solid #2d5a9e', cursor: tags ? 'pointer' : 'not-allowed', opacity: tags ? 1 : 0.4, whiteSpace: 'nowrap' }}
             >
               ↓ Power BI
-            </button>
+            </button> */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 11, color: 'var(--tx-muted)' }}>🌙</span>
               <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme" />

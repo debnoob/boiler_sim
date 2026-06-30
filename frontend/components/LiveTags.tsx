@@ -65,7 +65,10 @@ export function LiveTags() {
 
   // ── status helpers ─────────────────────────────────────────────────────────
   const pStatus  = !t ? 'neutral' : t.steam_pressure > 13 ? 'crit' : t.steam_pressure > 12 ? 'warn' : 'ok';
-  const lvlStatus = !t ? 'neutral' : t.drum_level < 200 ? 'crit' : t.drum_level < 280 ? 'warn' : 'ok';
+  const lvlStatus = !t ? 'neutral'
+    : t.drum_level < 200 || t.drum_level > 720 ? 'crit'
+    : t.drum_level < 280 || t.drum_level > 600 ? 'warn'
+    : 'ok';
   const o2Status  = !t ? 'neutral' : t.o2_percent < 2 || t.o2_percent > 5.5 ? 'crit' : t.o2_percent > 4 ? 'warn' : 'ok';
   const fgtStatus = !t ? 'neutral' : t.flue_gas_temp > 240 ? 'crit' : t.flue_gas_temp > 220 ? 'warn' : 'ok';
   const effStatus = !t ? 'neutral' : t.efficiency < 75 ? 'crit' : t.efficiency < 82 ? 'warn' : 'ok';
