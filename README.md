@@ -214,9 +214,25 @@ python engine/anomaly_detector.py
 export GROQ_API_KEY="your-key-here"
 python engine/ai_analyst.py
 
+# Optional Terminal 4 — local historian for 90+ days of telemetry history
+python engine/historian_service.py
+
 # Open index.html in a browser
 ```
 
 Switch scenarios from Terminal 1 by pressing `d` (degrade), `c` (critical), `f` (fault), `r` (reset).
 
+### Local Historian
+
+`engine/historian_service.py` is the default no-Docker historian path. It
+subscribes to the boiler heartbeat, alerts, anomaly score, diagnosis, and
+control-action topics, then stores them in SQLite at
+`historian/nexus_historian.db`.
+
+- Default retention is 92 days, configurable with `HISTORIAN_RETENTION_DAYS`.
+- Database path is configurable with `HISTORIAN_DB_PATH`.
+- The AI analyst uses `engine/historian_client.py` to answer historical chat
+  questions through safe query functions, not free-form SQL.
+- Docker Compose includes an optional `historian` service if you later want to
+  run the whole stack containerized.
 

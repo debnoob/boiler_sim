@@ -21,8 +21,29 @@ function severityColor(severity = 'warning') {
   return '#f59e0b';
 }
 
+function normalizeToString(val: unknown): string {
+  if (val == null) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (Array.isArray(val)) {
+    return val.map((item, i) => `${i + 1}. ${normalizeToString(item)}`).join('\n');
+  }
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>;
+    const text = obj.action ?? obj.step ?? obj.description ?? obj.text ?? obj.message ?? obj.recommendation;
+    if (text != null) {
+      const extras: string[] = [];
+      if (obj.urgency) extras.push(`Urgency: ${obj.urgency}`);
+      if (obj.timing) extras.push(`Timing: ${obj.timing}`);
+      return extras.length ? `${normalizeToString(text)} (${extras.join(', ')})` : normalizeToString(text);
+    }
+    return JSON.stringify(val);
+  }
+  return String(val);
+}
+
 export default function IncidentsPage() {
-  const { alerts, chatMessages, woCount } = useNexusStore();
+  const { alerts, chatMessages } = useNexusStore();
   const latestDiagnosis = useMemo(() => getLatestDiagnosis(chatMessages), [chatMessages]);
   const activeAlerts = alerts.slice(-12).reverse();
 
@@ -49,7 +70,7 @@ export default function IncidentsPage() {
                   </span>
                   <strong>{latestDiagnosis.data.probable_cause || 'Boiler anomaly'}</strong>
                 </div>
-                {latestDiagnosis.data.explanation && <p>{latestDiagnosis.data.explanation}</p>}
+                {latestDiagnosis.data.explanation && <p>{normalizeToString(latestDiagnosis.data.explanation)}</p>}
                 <div className="evidence-list">
                   {(latestDiagnosis.data.deviated_sensors || []).slice(0, 4).map((sensor, i) => (
                     <div key={`${sensor.sensor}-${i}`}>
@@ -62,7 +83,7 @@ export default function IncidentsPage() {
                 {latestDiagnosis.data.recommended_action && (
                   <div className="operator-action">
                     <span>Recommended action</span>
-                    <p>{latestDiagnosis.data.recommended_action}</p>
+                    <p style={{ whiteSpace: 'pre-line' }}>{normalizeToString(latestDiagnosis.data.recommended_action)}</p>
                   </div>
                 )}
                 <div className="action-row">

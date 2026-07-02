@@ -24,7 +24,12 @@
       "Bash(npx tsc *)",
       "Bash(kill %1)",
       "Bash(curl -s http://localhost:3000)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('historian_client.py'\\).read\\(\\)\\); ast.parse\\(open\\('ai_analyst.py'\\).read\\(\\)\\); print\\('✓ syntax OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python3 -m py_compile manual_sections.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('ai_analyst.py'\\).read\\(\\)\\); print\\('ai_analyst.py parses OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('boiler_engine.py'\\).read\\(\\)\\); print\\('boiler_engine.py parses OK'\\)\")"
     ]
   }
 }

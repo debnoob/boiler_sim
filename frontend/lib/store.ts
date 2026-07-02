@@ -336,7 +336,10 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       const messages = state.chatMessages.filter(m => m.id !== 'thinking');
       const msg: ChatMessage = {
         id: `resp-${Date.now()}`,
-        type: data.type === 'shift_report' ? 'shift_report' : data.type === 'what_if' ? 'what_if' : 'ai',
+        type: data.type === 'shift_report' ? 'shift_report'
+          : data.type === 'what_if' ? 'what_if'
+          : data.type === 'maintenance_priorities' ? 'maintenance_priorities'
+          : 'ai',
         content: data.answer || data.response || '',
         timestamp: new Date().toLocaleTimeString(),
         data,

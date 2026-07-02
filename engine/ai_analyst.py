@@ -32,45 +32,70 @@ from safety_policy import (
     validate_llm_text,
 )
 
-# ============================================================
-# RAG CONFIG
-# ============================================================
-RAG_SERVER_URL = os.environ.get("RAG_SERVER_URL", "http://localhost:8001")
-RAG_TOP_K = 4
+try:
+    from historian_client import (
+        answer_historical_metric_question,
+        answer_maintenance_priority_question,
+        build_historian_context,
+    )
+except Exception:
+    answer_historical_metric_question = None
+    answer_maintenance_priority_question = None
+    build_historian_context = None
 
+# ============================================================
+# MANUAL KNOWLEDGE (in-prompt, keyword-routed — no vector DB)
+# ============================================================
+# STATIC_CORE is baked into the chat system prompt (cache-friendly, ~0 latency
+# after warmup). route_manual() pulls only the 1-2 relevant sections per question.
+from manual_sections import STATIC_CORE, route_manual
 
-def rag_retrieve(query: str) -> str:
-    """Query the RAG server and return formatted context chunks, or empty string on failure."""
-    try:
-        resp = requests.post(
-            f"{RAG_SERVER_URL}/api/search",
-            json={"query": query, "top_k": RAG_TOP_K},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            return ""
-        results = resp.json().get("results", [])
-        if not results:
-            return ""
-        parts = []
-        for i, r in enumerate(results, 1):
-            src = r.get("filename", "manual")
-            parts.append(f"[Excerpt {i} — {src}]\n{r['text']}")
-        return "\n\n".join(parts)
-    except Exception:
-        return ""
+# ============================================================
+# RAG CONFIG (DISABLED — kept for later; swap route_manual() back to rag_retrieve()
+# and re-enable the RAG server + Qdrant to use vector retrieval for uploaded docs)
+# ============================================================
+# RAG_SERVER_URL = os.environ.get("RAG_SERVER_URL", "http://localhost:8001")
+# RAG_TOP_K = 4
+#
+#
+# def rag_retrieve(query: str) -> str:
+#     """Query the RAG server and return formatted context chunks, or empty string on failure."""
+#     try:
+#         resp = requests.post(
+#             f"{RAG_SERVER_URL}/api/search",
+#             json={"query": query, "top_k": RAG_TOP_K},
+#             timeout=10,
+#         )
+#         if resp.status_code != 200:
+#             return ""
+#         results = resp.json().get("results", [])
+#         if not results:
+#             return ""
+#         parts = []
+#         for i, r in enumerate(results, 1):
+#             src = r.get("filename", "manual")
+#             parts.append(f"[Excerpt {i} — {src}]\n{r['text']}")
+#         return "\n\n".join(parts)
+#     except Exception:
+#         return ""
+
 
 # ============================================================
 # CONFIG
 # ============================================================
-BROKER = "localhost"
+BROKER = os.environ.get("MQTT_BROKER_HOST", "localhost")
 PORT   = 1883
 
 # Ollama settings
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b-instruct")
+OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
 OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/chat"
 OLLAMA_NUM_CTX  = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
+# Thinking/reasoning models (Qwen3, DeepSeek-R1, etc.) emit <think>...</think> and
+# are slow on CPU. Disable thinking by default for this deployment; set
+# OLLAMA_THINK=true to re-enable. Non-thinking models (qwen2.5) that reject the
+# field are handled automatically (see call_llm).
+OLLAMA_THINK    = os.environ.get("OLLAMA_THINK", "false").strip().lower() in ("1", "true", "yes", "on")
 
 # MQTT Topics
 TOPIC_HEARTBEAT = "factory/pumphouse4/boiler/unit01/system/heartbeat"
@@ -87,6 +112,33 @@ TOPIC_CONTROL_ACTION = "factory/pumphouse4/boiler/unit01/ai/control_action"  # A
 
 # Debounce: one diagnosis per anomaly event
 DIAGNOSIS_COOLDOWN = 30  # seconds between diagnoses
+
+# ============================================================
+# CHAT SYSTEM PROMPT  (defined ONCE at module level so it is byte-identical on
+# every call — this lets Ollama reuse the cached KV state of the prefix, so the
+# static manual core costs ~0 latency after the startup warmup.)
+# STATIC_CORE (baselines, limits, answer style) lives here instead of RAG so it
+# is always present and cache-friendly. Situational manual notes are appended to
+# the USER message by route_manual().
+# ============================================================
+CHAT_SYSTEM_PROMPT = (
+    "You are a boiler operations expert AI for NEXUS OS monitoring BOILER-01. "
+    "A deterministic physics engine has already computed the current plant state — "
+    "you MUST anchor your answer to the specific sensor values and computed findings provided. "
+    "The SAFETY POLICY LAYER is mandatory and overrides any generic maintenance habit. "
+    "If it marks evidence as contradictory, say the telemetry is inconsistent and prefer verification. "
+    "Never include blocked action classes. "
+    "Do NOT give generic boiler theory. "
+    "Cite actual numbers: 'efficiency is 73.2%, 16.1% below the 87% baseline because...' "
+    "When HISTORIAN CONTEXT is present, prefer it for historical claims and include the queried range. "
+    "If the user asked for a simple historical metric, answer only the metric and comparison to baseline, "
+    "without explaining causes unless the user explicitly asks why. "
+    "FORMATTING (strict): "
+    "**bold** for sensor names/values only. Dash bullet lists for recommendations. "
+    "No markdown tables, no HTML, no headers (##). Max 180 words. "
+    "Resolve follow-up questions using the conversation history."
+    "\n\n" + STATIC_CORE
+)
 
 BASELINES = {
     "steam_pressure": 10.0,
@@ -115,6 +167,14 @@ THRESHOLDS = {
     "o2_percent_low": 2.0,
     "tube_health_inspect": 70.0,
 }
+
+OEE_RATED_STEAM_FLOW_KGHR = 2300.0
+OEE_MIN_PRESSURE_BAR = 9.0
+OEE_MAX_PRESSURE_BAR = 12.0
+OEE_MIN_STEAM_TEMP_C = 170.0
+OEE_MAX_STEAM_TEMP_C = 195.0
+OEE_MIN_DRUM_LEVEL_MM = 280.0
+OEE_MAX_DRUM_LEVEL_MM = 600.0
 
 OPTIMAL = {
     "o2_percent_low": 2.0,
@@ -304,6 +364,13 @@ def _is_current_value_question(question, tag):
     if not tag:
         return False
     q = question.lower()
+    historical_terms = (
+        "yesterday", "today", "shift", "last ", "past ", "week", "month",
+        "history", "historian", "trend", "average", "avg", "minimum",
+        "maximum", "highest", "lowest", "worst", "compare", "before",
+    )
+    if any(term in q for term in historical_terms):
+        return False
     current_terms = (
         "what is", "what's", "current", "now", "right now", "reading",
         "value", "show", "tell me", "how much", "status"
@@ -356,6 +423,101 @@ def build_current_value_answer(question, latest_reading):
 
     lines.append("I am only reporting the live value here; ask for diagnosis or recommended actions if you want next steps.")
     return "\n".join(lines)
+
+
+def is_oee_question(question):
+    q = question.lower()
+    oee_terms = (
+        "oee", "overall equipment effectiveness", "availability",
+        "performance factor", "quality factor", "good steam",
+        "bad steam", "defective steam"
+    )
+    calculation_terms = (
+        "calculate", "calculation", "formula", "how do i", "how to",
+        "what is", "what's", "explain", "show", "shift", "current"
+    )
+    return any(term in q for term in oee_terms) and any(term in q for term in calculation_terms)
+
+
+def _pct(value):
+    return f"{value * 100.0:.2f}%"
+
+
+def _kg(value):
+    return f"{value:.1f} kg"
+
+
+def _format_oee_formula(snapshot):
+    return (
+        "OEE for this boiler should be calculated as:\n"
+        "- Availability = available boiler time / planned boiler time\n"
+        "- Performance = actual steam mass / rated steam mass during available time\n"
+        "- Quality = good steam mass / total steam mass\n"
+        "- OEE = Availability x Performance x Quality\n\n"
+        "For BOILER-01, good steam means flame proven, no safety-valve lift, not in FAULT mode, "
+        f"pressure {OEE_MIN_PRESSURE_BAR:.1f}-{OEE_MAX_PRESSURE_BAR:.1f} bar, "
+        f"steam temperature {OEE_MIN_STEAM_TEMP_C:.0f}-{OEE_MAX_STEAM_TEMP_C:.0f} °C, and "
+        f"drum level {OEE_MIN_DRUM_LEVEL_MM:.0f}-{OEE_MAX_DRUM_LEVEL_MM:.0f} mm. "
+        f"The current rated steam basis is {OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr."
+    )
+
+
+def build_oee_answer(question, stats_snapshot):
+    if not is_oee_question(question):
+        return None
+
+    q = question.lower()
+    if stats_snapshot.get("oee_samples", 0) <= 0:
+        return _format_oee_formula(stats_snapshot)
+
+    oee = stats_snapshot.get("oee", {})
+    availability = oee.get("availability", 0.0)
+    performance = oee.get("performance", 0.0)
+    quality = oee.get("quality", 0.0)
+    overall = oee.get("oee", 0.0)
+
+    planned_seconds = oee.get("planned_seconds", 0.0)
+    available_seconds = oee.get("available_seconds", 0.0)
+    actual_steam_kg = oee.get("actual_steam_kg", 0.0)
+    available_steam_kg = oee.get("available_steam_kg", actual_steam_kg)
+    rated_steam_kg = oee.get("rated_steam_kg", 0.0)
+    good_steam_kg = oee.get("good_steam_kg", 0.0)
+    bad_steam_kg = max(0.0, actual_steam_kg - good_steam_kg)
+
+    if "formula" in q or "how" in q or "method" in q:
+        return _format_oee_formula(stats_snapshot)
+
+    if "availability" in q and "oee" not in q:
+        return (
+            f"Availability is **{_pct(availability)}** for this shift window. "
+            f"Calculation: **{available_seconds:.0f} s available / {planned_seconds:.0f} s planned**. "
+            "I count the boiler as available when the flame is proven and the unit is not in FAULT mode."
+        )
+
+    if "performance" in q and "oee" not in q:
+        return (
+            f"Performance is **{_pct(performance)}** for this shift window. "
+            f"Calculation: **{_kg(available_steam_kg)} steam during available time / {_kg(rated_steam_kg)} rated steam** "
+            f"during available time, using **{OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr** as the rated basis."
+        )
+
+    if ("quality" in q or "good steam" in q or "defective steam" in q or "bad steam" in q) and "oee" not in q:
+        return (
+            f"Quality is **{_pct(quality)}** for this shift window. "
+            f"Calculation: **{_kg(good_steam_kg)} good steam / {_kg(actual_steam_kg)} total steam**. "
+            f"Estimated out-of-spec steam is **{_kg(bad_steam_kg)}**. "
+            "Good steam requires pressure, temperature, drum level, flame, safety valve, and mode to be inside the BOILER-01 limits."
+        )
+
+    return (
+        f"Current shift OEE is **{_pct(overall)}**.\n"
+        f"- Availability: **{_pct(availability)}** = {available_seconds:.0f} s / {planned_seconds:.0f} s\n"
+        f"- Performance: **{_pct(performance)}** = {_kg(available_steam_kg)} / {_kg(rated_steam_kg)} at rated capacity\n"
+        f"- Quality: **{_pct(quality)}** = {_kg(good_steam_kg)} / {_kg(actual_steam_kg)}\n"
+        f"- OEE: **{_pct(availability)} x {_pct(performance)} x {_pct(quality)} = {_pct(overall)}**\n\n"
+        "As a boiler metric, keep OEE separate from thermal efficiency: OEE tells whether the asset produced good steam on time, "
+        "while boiler efficiency tells how much fuel energy was converted into useful steam energy."
+    )
 
 # ============================================================
 # TELEMETRY RING BUFFER (last N minutes of context)
@@ -436,10 +598,16 @@ class ShiftStats:
     def __init__(self):
         self.lock = Lock()
         self.start_time = time.time()
+        self.last_sample_time = None
         self.anomaly_events = 0
         self.alert_counts = {"CRITICAL": 0, "HIGH": 0, "WARNING": 0, "LOW": 0}
         self.samples = 0
         self.flame_off_samples = 0
+        self.oee_available_seconds = 0.0
+        self.oee_actual_steam_kg = 0.0
+        self.oee_available_steam_kg = 0.0
+        self.oee_rated_steam_kg = 0.0
+        self.oee_good_steam_kg = 0.0
         self.eff_start = None
         self.eff_end = None
         self.eff_min = None
@@ -449,11 +617,39 @@ class ShiftStats:
     def record_reading(self, reading):
         tags = reading.get("tags", {})
         eff = tags.get("efficiency")
+        now = time.time()
+        mode = reading.get("mode", "NORMAL")
+        flame_on = bool(tags.get("flame_status", 1))
+        safety_closed = not bool(tags.get("safety_valve", 0))
+        available = flame_on and mode != "FAULT"
+        good_steam = (
+            available
+            and safety_closed
+            and OEE_MIN_PRESSURE_BAR <= _as_float(tags.get("steam_pressure"), -999.0) <= OEE_MAX_PRESSURE_BAR
+            and OEE_MIN_STEAM_TEMP_C <= _as_float(tags.get("steam_temperature"), -999.0) <= OEE_MAX_STEAM_TEMP_C
+            and OEE_MIN_DRUM_LEVEL_MM <= _as_float(tags.get("drum_level"), -999.0) <= OEE_MAX_DRUM_LEVEL_MM
+        )
+
         with self.lock:
+            if self.last_sample_time is None:
+                dt = 1.0
+            else:
+                dt = max(0.0, min(now - self.last_sample_time, 5.0))
+            self.last_sample_time = now
+
             self.samples += 1
-            if not tags.get("flame_status", 1):
+            if not flame_on:
                 self.flame_off_samples += 1
-            self.modes_seen.add(reading.get("mode", "NORMAL"))
+            self.modes_seen.add(mode)
+            steam_flow = max(0.0, _as_float(tags.get("steam_flow"), 0.0))
+            steam_kg = steam_flow * dt / 3600.0
+            self.oee_actual_steam_kg += steam_kg
+            if available:
+                self.oee_available_seconds += dt
+                self.oee_available_steam_kg += steam_kg
+                self.oee_rated_steam_kg += OEE_RATED_STEAM_FLOW_KGHR * dt / 3600.0
+            if good_steam:
+                self.oee_good_steam_kg += steam_kg
             if eff is not None:
                 if self.eff_start is None:
                     self.eff_start = eff
@@ -478,9 +674,34 @@ class ShiftStats:
             uptime_pct = 100.0
             if self.samples > 0:
                 uptime_pct = 100.0 * (1 - self.flame_off_samples / self.samples)
+            availability = self.oee_available_seconds / elapsed if elapsed > 0 else 0.0
+            performance = self.oee_available_steam_kg / self.oee_rated_steam_kg if self.oee_rated_steam_kg > 0 else 0.0
+            quality = self.oee_good_steam_kg / self.oee_actual_steam_kg if self.oee_actual_steam_kg > 0 else 0.0
+            availability = max(0.0, min(availability, 1.0))
+            performance = max(0.0, min(performance, 1.5))
+            quality = max(0.0, min(quality, 1.0))
             return {
                 "shift_duration": f"{hours}h {minutes:02d}m",
                 "uptime_pct": round(uptime_pct, 1),
+                "oee_samples": self.samples,
+                "oee": {
+                    "availability": round(availability, 4),
+                    "performance": round(performance, 4),
+                    "quality": round(quality, 4),
+                    "oee": round(availability * performance * quality, 4),
+                    "planned_seconds": round(elapsed, 1),
+                    "available_seconds": round(self.oee_available_seconds, 1),
+                    "actual_steam_kg": round(self.oee_actual_steam_kg, 2),
+                    "available_steam_kg": round(self.oee_available_steam_kg, 2),
+                    "rated_steam_kg": round(self.oee_rated_steam_kg, 2),
+                    "good_steam_kg": round(self.oee_good_steam_kg, 2),
+                    "rated_steam_flow_kg_hr": OEE_RATED_STEAM_FLOW_KGHR,
+                    "good_steam_limits": {
+                        "pressure_bar": [OEE_MIN_PRESSURE_BAR, OEE_MAX_PRESSURE_BAR],
+                        "steam_temp_c": [OEE_MIN_STEAM_TEMP_C, OEE_MAX_STEAM_TEMP_C],
+                        "drum_level_mm": [OEE_MIN_DRUM_LEVEL_MM, OEE_MAX_DRUM_LEVEL_MM],
+                    },
+                },
                 "anomaly_events": self.anomaly_events,
                 "alerts": dict(self.alert_counts),
                 "efficiency": {
@@ -567,11 +788,39 @@ class IncidentMemory:
 # ============================================================
 # UNIFIED LLM CLIENT  (Ollama)
 # ============================================================
-def call_llm(messages, json_mode=False, max_tokens=800):
+# Session flag: set False if the model rejects the "think" field, so we only pay
+# the retry-without-think once and never send it again this run.
+_THINK_SUPPORTED = True
+
+
+def _strip_think(text):
+    """
+    Remove <think>...</think> reasoning blocks from a model reply.
+    Thinking models (Qwen3, DeepSeek-R1) wrap their scratch reasoning in these tags;
+    only the text after the block is the real answer. Handles unclosed blocks too.
+    """
+    if not text:
+        return text
+    # Drop complete reasoning blocks.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # If a closing tag remains (opening was trimmed), keep only what follows it.
+    if "</think>" in text:
+        text = text.split("</think>")[-1]
+    # Strip any stray tags.
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def call_llm(messages, json_mode=False, max_tokens=800, think=None):
     """
     Send a chat completion request to the native Ollama server.
     Optimized for Intel Mac CPU inference over local Wi-Fi.
+
+    think: None -> use the OLLAMA_THINK default; True/False -> force per-call.
+    Thinking is disabled by default (faster on CPU, clean YES/NO for the guardrail);
+    if the model doesn't support the "think" field we drop it and retry once.
     """
+    global _THINK_SUPPORTED
     url     = OLLAMA_URL
     headers = {"Content-Type": "application/json"}
     model   = OLLAMA_MODEL
@@ -588,19 +837,28 @@ def call_llm(messages, json_mode=False, max_tokens=800):
             "num_ctx": OLLAMA_NUM_CTX
         }
     }
-    
+
     if json_mode:
         body["format"] = "json"  # Native Ollama JSON mode
+
+    want_think = OLLAMA_THINK if think is None else think
+    if want_think is not None and _THINK_SUPPORTED:
+        body["think"] = bool(want_think)
 
     for attempt in range(3):
         try:
             resp = requests.post(url, headers=headers, json=body, timeout=timeout)
             if resp.status_code == 200:
-                # Native Ollama response parsing
-                return resp.json()["message"]["content"]
-            else:
-                print(f"[AI Analyst] Ollama error {resp.status_code}: {resp.text[:200]}")
-                return None
+                # Native Ollama response parsing (strip any reasoning block)
+                return _strip_think(resp.json()["message"]["content"])
+            # Some models reject the "think" field — drop it and retry cleanly.
+            if "think" in body:
+                print("[AI Analyst] Model rejected 'think' field — disabling and retrying")
+                _THINK_SUPPORTED = False
+                body.pop("think", None)
+                continue
+            print(f"[AI Analyst] Ollama error {resp.status_code}: {resp.text[:200]}")
+            return None
         except requests.exceptions.Timeout:
             print(f"[AI Analyst] Timeout (attempt {attempt+1}/3)")
         except Exception as e:
@@ -641,8 +899,33 @@ class AIAnalyst:
             print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, and chat topics")
             # Publish online status
             client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+            # Warm the Ollama prompt cache in the background so the FIRST operator
+            # question is fast (the static system prompt gets pre-processed & cached).
+            import threading
+            threading.Thread(target=self.warmup_llm, daemon=True).start()
         else:
             print(f"[AI Analyst] ✗ Connection failed: {rc}")
+
+    def warmup_llm(self):
+        """
+        Prime Ollama's KV cache with the static CHAT_SYSTEM_PROMPT prefix.
+        The first LLM call after model load pays the full prompt prefill (slow on
+        CPU); doing it here on startup means the operator never waits for it. All
+        later chat calls reuse this cached prefix, so the static manual core adds
+        ~0 latency. Runs in a daemon thread — failure is non-fatal.
+        """
+        try:
+            call_llm(
+                [
+                    {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                    {"role": "user", "content": "ready?"},
+                ],
+                json_mode=False,
+                max_tokens=1,
+            )
+            print("[AI Analyst] LLM warmup complete — system prompt cached")
+        except Exception as e:
+            print(f"[AI Analyst] ⚠ LLM warmup skipped: {e}")
 
     def on_message(self, client, userdata, msg):
         try:
@@ -801,13 +1084,8 @@ class AIAnalyst:
                 print(f"[AI Analyst] 🔧 PID issue [{pi.loop}]: {pi.symptom}")
         # ─────────────────────────────────────────────────────────────────
 
-        # ── RAG: fetch relevant manual context ────────────────────────────
-        rag_query = f"{brief.hypothesis_label} boiler anomaly diagnosis corrective action"
-        manual_context = rag_retrieve(rag_query)
-        manual_block = (
-            f"BOILER MANUAL EXCERPTS (authoritative reference):\n{manual_context}\n\n"
-            if manual_context else ""
-        )
+        # ── Manual notes (keyword-routed, no vector DB) ────────────────────
+        manual_block = route_manual(brief.hypothesis_label)
         # ─────────────────────────────────────────────────────────────────
 
         messages = [
@@ -928,13 +1206,8 @@ class AIAnalyst:
                 print(f"[AI Analyst] 🔧 PID issue [{pi.loop}]: {pi.symptom}")
         # ─────────────────────────────────────────────────────────────────
 
-        # ── RAG: fetch relevant manual excerpts for this alert tag ─────────
-        rag_query = f"{payload.get('tag','')} {brief.hypothesis_label} boiler alarm corrective"
-        manual_context = rag_retrieve(rag_query)
-        manual_block = (
-            f"BOILER MANUAL EXCERPTS (authoritative reference):\n{manual_context}\n\n"
-            if manual_context else ""
-        )
+        # ── Manual notes (keyword-routed, no vector DB) ────────────────────
+        manual_block = route_manual(f"{payload.get('tag','')} {brief.hypothesis_label}")
         # ─────────────────────────────────────────────────────────────────
 
         messages = [
@@ -1052,16 +1325,28 @@ class AIAnalyst:
             {"role": "user", "content": question},
         ]
         try:
-            # Increased max_tokens to accommodate reasoning models (e.g. DeepSeek-R1 <think> blocks)
-            result = call_llm(messages, json_mode=False, max_tokens=200)
+            # think=False forces a clean one-word YES/NO even on reasoning models.
+            # call_llm already strips any <think> block from the reply.
+            result = call_llm(messages, json_mode=False, max_tokens=64, think=False)
             if result is None:
                 print("[AI Analyst] ⚠ Classifier LLM unavailable — jailbreak-only fallback")
                 return self._jailbreak_fallback(question)
-            
-            # Remove <think>...</think> block if present
-            clean_result = result.split("</think>")[-1].strip().upper()
-            is_ok = clean_result.startswith("YES")
-            
+
+            cleaned = result.strip().upper()
+            # FAIL OPEN: only block when the model clearly says NO. Empty, garbled,
+            # or ambiguous replies default to on-domain so a formatting quirk in the
+            # model never locks operators out of the assistant.
+            if not cleaned:
+                is_ok = True
+            elif cleaned.startswith("NO"):
+                is_ok = False
+            elif cleaned.startswith("YES"):
+                is_ok = True
+            elif "NO" in cleaned and "YES" not in cleaned:
+                is_ok = False
+            else:
+                is_ok = True
+
             tag = "✅ ON-DOMAIN" if is_ok else "🚫 OFF-DOMAIN"
             print(f"[AI Analyst] {tag}: {question[:70]}")
             return is_ok
@@ -1111,6 +1396,18 @@ class AIAnalyst:
             self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
             return
 
+        oee_answer = build_oee_answer(question, self.stats.snapshot())
+        if oee_answer:
+            print(f"[AI Analyst] OEE calculation answer: {question[:70]}")
+            self.chat_history.append({"role": "user", "content": question})
+            self.chat_history.append({"role": "assistant", "content": oee_answer})
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                "answer": oee_answer,
+                "timestamp": time.time()
+            }), qos=1)
+            self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+            return
+
         # ── GUARDRAIL: reject off-topic questions immediately ──────────────
         if not self._is_on_domain(question):
             print(f"[AI Analyst] 🚫 Off-topic question blocked: {question[:80]}")
@@ -1134,6 +1431,34 @@ class AIAnalyst:
 
         print(f"[AI Analyst] 💬 Chat question: {question}")
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
+
+        # Maintenance-priority questions return a structured card payload
+        # (dict); historical metric questions return a plain string.
+        maintenance_answer = None
+        if answer_maintenance_priority_question is not None:
+            maintenance_answer = answer_maintenance_priority_question(question)
+        if maintenance_answer:
+            payload = dict(maintenance_answer)
+            payload["timestamp"] = time.time()
+            self.chat_history.append({"role": "user", "content": question})
+            self.chat_history.append({"role": "assistant", "content": maintenance_answer.get("answer", "")})
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(payload), qos=1)
+            self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+            print("[AI Analyst] 🧰 Maintenance priorities card published")
+            return
+
+        deterministic_answer = None
+        if answer_historical_metric_question is not None:
+            deterministic_answer = answer_historical_metric_question(question)
+        if deterministic_answer:
+            self.chat_history.append({"role": "user", "content": question})
+            self.chat_history.append({"role": "assistant", "content": deterministic_answer})
+            self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                "answer": deterministic_answer,
+                "timestamp": time.time()
+            }), qos=1)
+            self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+            return
 
         # ── Deterministic pre-analysis ─────────────────────────────────────
         samples = self.telemetry.get_recent_samples(last_n=30)
@@ -1161,32 +1486,18 @@ class AIAnalyst:
         print(f"[AI Analyst] 🧮 Deterministic context: {brief.hypothesis_label} [{brief.confidence}]")
         # ─────────────────────────────────────────────────────────────────
 
-        # ── RAG: retrieve relevant manual excerpts ─────────────────────────
-        manual_context = rag_retrieve(question)
-        manual_block = (
-            f"BOILER MANUAL EXCERPTS (cite when relevant):\n{manual_context}\n\n"
-            if manual_context else ""
-        )
+        # ── Manual notes (keyword-routed, no vector DB) ────────────────────
+        manual_block = route_manual(question)
         # ─────────────────────────────────────────────────────────────────
 
+        historian_block = ""
+        if build_historian_context is not None:
+            historian_block = build_historian_context(question)
+            if historian_block:
+                print("[AI Analyst] 📚 Historian context attached")
+
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a boiler operations expert AI for NEXUS OS monitoring BOILER-01. "
-                    "A deterministic physics engine has already computed the current plant state — "
-                    "you MUST anchor your answer to the specific sensor values and computed findings provided. "
-                    "The SAFETY POLICY LAYER is mandatory and overrides any generic maintenance habit. "
-                    "If it marks evidence as contradictory, say the telemetry is inconsistent and prefer verification. "
-                    "Never include blocked action classes. "
-                    "Do NOT give generic boiler theory. "
-                    "Cite actual numbers: 'efficiency is 73.2%, 16.1% below the 87% baseline because...' "
-                    "FORMATTING (strict): "
-                    "**bold** for sensor names/values only. Dash bullet lists for recommendations. "
-                    "No markdown tables, no HTML, no headers (##). Max 180 words. "
-                    "Resolve follow-up questions using the conversation history."
-                )
-            }
+            {"role": "system", "content": CHAT_SYSTEM_PROMPT}
         ]
         # Inject recent conversation for follow-up resolution
         messages.extend(self.chat_history)
@@ -1195,6 +1506,7 @@ class AIAnalyst:
             "content": (
                 f"{physics_block}\n\n"
                 f"{safety_block}\n\n"
+                f"{historian_block}"
                 f"{manual_block}"
                 f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
                 f"OPERATOR QUESTION: {question}"
@@ -1232,12 +1544,8 @@ class AIAnalyst:
         latest = self.telemetry.get_latest_summary()
         trend = self.telemetry.get_context(last_n=30)
 
-        # ── RAG: fetch manual excerpts relevant to this hypothetical ────────
-        manual_context = rag_retrieve(question)
-        manual_block = (
-            f"BOILER MANUAL EXCERPTS (use as authoritative safety reference):\n{manual_context}\n\n"
-            if manual_context else ""
-        )
+        # ── Manual notes (keyword-routed, no vector DB) ─────────────────────
+        manual_block = route_manual(question)
         # ────────────────────────────────────────────────────────────────────
 
         messages = [

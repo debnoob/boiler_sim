@@ -344,16 +344,14 @@ def validate_llm_text(text: str, ctx: SafetyContext) -> tuple[str, list[str]]:
 
     cleaned = "\n".join(kept_lines).strip()
     if blocked_notes:
+        # Operator-facing text only gets the helpful, plain-language additions.
+        # The internal "blocked" reasons are NOT shown to the operator — they are
+        # returned in blocked_notes for the caller to log.
         lower_cleaned = cleaned.lower()
         if ctx.contradictions and "contradict" not in lower_cleaned and "inconsistent" not in lower_cleaned:
-            cleaned += "\n\nTelemetry note: evidence is contradictory; verify field instruments before accepting a single root cause."
+            cleaned += "\n\nNote: some readings do not agree with each other — check the field meters before trusting one cause."
         if ctx.safe_actions:
-            cleaned += "\n\nPolicy-safe next checks:\n" + "\n".join(f"- {item}" for item in ctx.safe_actions[:4])
-        unique = []
-        for note in blocked_notes:
-            if note not in unique:
-                unique.append(note)
-        cleaned += "\n\nSafety policy blocked unsupported/unsafe content: " + "; ".join(unique[:3])
+            cleaned += "\n\nSafe next checks:\n" + "\n".join(f"- {item}" for item in ctx.safe_actions[:4])
 
     return cleaned or text, blocked_notes
 

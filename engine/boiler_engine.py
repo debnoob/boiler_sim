@@ -13,15 +13,18 @@ import numpy as np
 import json
 import time
 import math
+import os
 import threading
 from datetime import datetime
 from iapws import IAPWS97
 from scipy.integrate import solve_ivp
 
+from environment import EnvironmentModel
+
 # ============================================================
 # MQTT CONFIG
 # ============================================================
-BROKER_HOST = "localhost"
+BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "localhost")
 BROKER_PORT = 1883
 PUBLISH_INTERVAL = 1.0  # seconds
 
@@ -55,6 +58,11 @@ TOPICS = {
     "efficiency":         f"{BASE}/unit01/kpi/efficiency",
     "heat_rate":          f"{BASE}/unit01/kpi/heat_rate",
 
+    # Environment (ambient + fuel quality) — drives efficiency/flue-gas drift
+    "ambient_temp":       f"{BASE}/unit01/environment/ambient_temp",
+    "humidity":           f"{BASE}/unit01/environment/humidity",
+    "fuel_lhv":           f"{BASE}/unit01/environment/fuel_lhv",
+
     # System
     "heartbeat":          f"{BASE}/unit01/system/heartbeat",
     "mode":               f"{BASE}/unit01/system/mode",
@@ -86,11 +94,21 @@ class PIDController:
 
     def update(self, setpoint, measurement, dt):
         error = setpoint - measurement
-        self.integral += error * dt
         derivative = (error - self.prev_error) / max(dt, 1e-6)
         self.prev_error = error
+
+        # Tentatively integrate, then anti-windup (conditional integration):
+        # if the resulting output saturates, undo this integration step so the
+        # integral cannot wind up while the actuator is pinned at a limit. Every
+        # real PID does this — without it the loop overshoots and sticks.
+        self.integral += error * dt
         output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
-        return max(self.out_min, min(self.out_max, output))
+        clamped = max(self.out_min, min(self.out_max, output))
+        if clamped != output and self.Ki != 0:
+            self.integral -= error * dt
+            output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
+            clamped = max(self.out_min, min(self.out_max, output))
+        return clamped
 
 # ============================================================
 # FAULT INJECTOR
@@ -200,6 +218,11 @@ class BoilerState:
         self.efficiency        = 87.0
         self.heat_rate         = 10500.0
 
+        # Environmental conditions (updated each tick from EnvironmentModel)
+        self.ambient_temp      = 25.0     # °C
+        self.humidity          = 55.0     # % RH
+        self.fuel_lhv          = 35.5     # MJ/m³ (live fuel quality)
+
         # Lag buffers
         self.pressure_buffer  = [10.0]  * 5
         self.temp_buffer      = [180.0] * 8
@@ -227,13 +250,17 @@ class BoilerPhysicsEngine:
     def __init__(self):
         self.state = BoilerState()
         self.faults = FaultInjector()
+        self.environment = EnvironmentModel()   # ambient + fuel-quality driver
         self.reset_ode_inventory()
 
         # Three PID loops
         self.pressure_pid  = PIDController(Kp=2.0,  Ki=0.1,  Kd=0.5,
                                            output_min=0, output_max=self.MAX_FUEL_FLOW)
+        # Drum-level loop is now the TRIM element of 2-element control (steam-flow
+        # feedforward carries the base flow), so its output is a bidirectional
+        # correction (kg/hr) around the feedforward, not the absolute feedwater flow.
         self.drumlevel_pid = PIDController(Kp=5.0,  Ki=0.5,  Kd=1.0,
-                                           output_min=0, output_max=self.MAX_FW_FLOW)
+                                           output_min=-2500, output_max=2500)
         self.o2_pid        = PIDController(Kp=1.0,  Ki=0.2,  Kd=0.1,
                                            output_min=0, output_max=self.MAX_AIR_FLOW)
 
@@ -308,8 +335,11 @@ class BoilerPhysicsEngine:
         # Effective heat to steam (UA_factor degrades with tube fouling)
         Q_effective = Q_fuel * UA_factor
 
-        # Evaporation rate (kg/s): heat in / latent heat
-        evap_rate = Q_effective / (h_fg * 1000.0)
+        # Evaporation rate (kg/s): heat in / latent heat.
+        # Q_effective is kW (kJ/s) and h_fg is kJ/kg, so Q/h_fg is already kg/s.
+        # (A previous ×1000 here made evaporation 1000x too small, so drum water
+        #  never boiled off and feedwater stalled at ~0.)
+        evap_rate = Q_effective / max(h_fg, 1.0)
 
         # Mass balances
         dm_w_dt = fw_flow - evap_rate
@@ -332,17 +362,29 @@ class BoilerPhysicsEngine:
         level_fraction = min(max(water_volume / self.DRUM_VOLUME_M3, 0.0), 1.0)
         return level_fraction * 800.0  # 0–800 mm range
 
-    def calculate_efficiency(self, flue_gas_temp, o2_percent, UA_factor):
-        stack_loss     = (flue_gas_temp - 150) * 0.04
+    def calculate_efficiency(self, flue_gas_temp, o2_percent, UA_factor,
+                             ambient_temp=25.0, fuel_lhv=35.5):
+        stack_loss      = (flue_gas_temp - 150) * 0.04
         excess_air_loss = max(0, (o2_percent - 3.0)) * 0.8
-        fouling_loss   = (1.0 - UA_factor) * 15.0
-        efficiency = 90.0 - stack_loss - excess_air_loss - fouling_loss
+        fouling_loss    = (1.0 - UA_factor) * 15.0
+        # Environmental losses (zero at reference 25 °C / 35.5 MJ/m³ so baseline
+        # efficiency is unchanged; colder ambient and leaner gas cost efficiency).
+        ambient_loss    = (25.0 - ambient_temp) * 0.08        # shell + cold-air loss
+        fuel_quality_loss = (35.5 - fuel_lhv) * 0.4           # leaner gas burns worse
+        efficiency = (90.0 - stack_loss - excess_air_loss - fouling_loss
+                      - ambient_loss - fuel_quality_loss)
         return max(min(efficiency, 94.0), 45.0)
 
     def tick(self, scenario="normal", degradation=0.0):
         s = self.state
         fp = self.faults.params
         dt = self.DT
+
+        # ---- Environment (ambient + fuel quality) ----
+        ambient_temp, humidity, fuel_lhv = self.environment.update(s.tick)
+        s.ambient_temp = ambient_temp
+        s.humidity     = humidity
+        s.fuel_lhv     = fuel_lhv
 
         # ---- Determine fault/degradation physical parameters ----
         UA_factor = fp["UA_factor"]
@@ -368,10 +410,17 @@ class BoilerPhysicsEngine:
         if not fp["ignition_active"]:
             fuel_flow_cmd = 0.0
 
-        # Drum level → feedwater flow (with valve fault)
-        fw_flow_cmd_kghr = self.drumlevel_pid.update(
+        # Drum level → feedwater flow — 2-element control:
+        #   feedforward: feedwater tracks steam demand (mass balance), so it sits
+        #                near steam flow instead of swinging on level error alone
+        #   trim:        level PID corrects any inventory imbalance around 400 mm
+        # This mirrors real industrial drum-level control and keeps feedwater
+        # physically sensible under varying load.
+        level_trim_kghr = self.drumlevel_pid.update(
             s.drum_level_setpoint, s.drum_level, dt
         )
+        fw_flow_cmd_kghr = steam_demand_kghr + level_trim_kghr
+        fw_flow_cmd_kghr = max(0.0, min(self.MAX_FW_FLOW, fw_flow_cmd_kghr))
         fw_flow_cmd_kghr *= fp["fw_valve_position"]
         fw_flow_cmd_kgs = fw_flow_cmd_kghr / 3600.0
 
@@ -381,9 +430,9 @@ class BoilerPhysicsEngine:
         )
         air_flow_cmd *= fp["air_damper_position"]
 
-        # ---- Heat input (kW) from fuel ----
+        # ---- Heat input (kW) from fuel (uses live fuel quality) ----
         fuel_m3_s = fuel_flow_cmd / 3600.0
-        Q_fuel_kw = fuel_m3_s * self.LHV_GAS * 1000.0  # kW
+        Q_fuel_kw = fuel_m3_s * s.fuel_lhv * 1000.0  # kW
 
         # ---- Integrate ODE over one timestep ----
         inputs = (Q_fuel_kw, fw_flow_cmd_kgs, steam_demand_kgs, UA_factor)
@@ -419,7 +468,12 @@ class BoilerPhysicsEngine:
         s.steam_flow    = steam_demand_kghr
         s.drum_level    = self.drum_level_from_mass(m_water, P_drum)
         s.feedwater_flow = fw_flow_cmd_kghr
-        s.feedwater_temp = 95.0 + np.random.normal(0, 1.2)
+        # Feedwater temp: base 95°C, warmer at high load (more economizer duty) and
+        # tracks ambient slightly.
+        s.feedwater_temp = (95.0
+                            + (steam_demand_kghr / 2300.0 - 1.0) * 20.0
+                            + (s.ambient_temp - 25.0) * 0.3
+                            + np.random.normal(0, 1.2))
         s.fuel_flow      = fuel_flow_cmd
         s.air_flow       = air_flow_cmd
 
@@ -432,8 +486,13 @@ class BoilerPhysicsEngine:
         if not fp["ignition_active"]:
             s.o2_percent = 20.9  # atmospheric when no combustion
 
-        # Flue gas temp: rises as UA drops (heat not transferred to steam)
-        base_fgt = 198.0 + (1.0 - UA_factor) * 85.0
+        # Flue gas temp: rises as UA drops (fouling), and also with firing rate,
+        # excess air, and ambient temperature — as on a real boiler.
+        firing_effect      = (fuel_flow_cmd / 138.0 - 1.0) * 40.0      # more fuel → hotter stack
+        excess_air_effect  = max(0.0, s.o2_percent - 3.0) * 3.0        # more excess air → hotter stack
+        ambient_effect     = (s.ambient_temp - 25.0) * 0.4            # colder inlet air → cooler stack
+        base_fgt = (198.0 + (1.0 - UA_factor) * 85.0
+                    + firing_effect + excess_air_effect + ambient_effect)
         s.flue_gas_temp = self.lag_filter(
             s.fluegas_buffer,
             base_fgt + np.random.normal(0, 2.5),
@@ -448,8 +507,11 @@ class BoilerPhysicsEngine:
         s.tube_health = max(45.0, min(97.0, UA_factor * 97.0 + np.random.normal(0, 0.1)))
 
         # KPIs
-        s.efficiency = self.calculate_efficiency(s.flue_gas_temp, s.o2_percent, UA_factor)
-        s.heat_rate  = (s.fuel_flow * self.LHV_GAS * 1000.0) / max(s.steam_flow, 1.0)
+        s.efficiency = self.calculate_efficiency(
+            s.flue_gas_temp, s.o2_percent, UA_factor,
+            ambient_temp=s.ambient_temp, fuel_lhv=s.fuel_lhv,
+        )
+        s.heat_rate  = (s.fuel_flow * s.fuel_lhv * 1000.0) / max(s.steam_flow, 1.0)
 
         s.degradation_factor = degradation
 
@@ -481,9 +543,15 @@ class BoilerPhysicsEngine:
                 "tube_health":       round(self.gaussian_noise(s.tube_health,       0.002), 2),
                 "efficiency":        round(self.gaussian_noise(s.efficiency,        0.003), 2),
                 "heat_rate":         round(self.gaussian_noise(s.heat_rate,         0.004), 1),
+                # Environmental readings (drive the efficiency/flue-gas drift)
+                "ambient_temp":      round(s.ambient_temp, 2),
+                "humidity":          round(s.humidity, 1),
+                "fuel_lhv":          round(s.fuel_lhv, 3),
             },
             "degradation_factor": round(s.degradation_factor, 4),
             "tick": s.tick,
+            # Environment model state + adjustable parameters (dashboard can read/set)
+            "environment": self.environment.snapshot(),
             # Live AI closed-loop control state (UI autopilot badge reads this)
             "control": {
                 "autopilot":     bool(s.ai_autopilot_active),
@@ -560,6 +628,11 @@ class NexusMQTTPublisher:
             s.firing_reduction_pct = float(payload["firing_reduction_pct"])
         if payload.get("soot_blow"):
             s.soot_blow_pending = True
+
+        # Live environment adjustment: {"environment": {"ambient_temp_mean": 10, ...}}
+        if isinstance(payload.get("environment"), dict):
+            self.engine.environment.set_params(**payload["environment"])
+            print(f"[{self.timestamp()}] ENVIRONMENT ADJUSTED: {payload['environment']}")
 
         print(f"[{self.timestamp()}] 🤖 AI CONTROL APPLIED: {payload.get('action','control')} "
               f"| O2sp={s.o2_setpoint_override} Psp={s.pressure_setpoint_override} "

@@ -14,6 +14,24 @@ export interface TelemetryTags {
   heat_rate: number;
   flame_status: number;
   safety_valve: number;
+  // Environment (ambient + fuel quality) — present when the engine env layer is on
+  ambient_temp?: number;
+  humidity?: number;
+  fuel_lhv?: number;
+}
+
+export interface EnvironmentState {
+  ambient_temp: number;
+  humidity: number;
+  fuel_lhv: number;
+  params: {
+    ambient_temp_mean: number;
+    ambient_temp_amplitude: number;
+    humidity_mean: number;
+    fuel_lhv_mean: number;
+    fuel_lhv_variation: number;
+    day_period_s: number;
+  };
 }
 
 export interface ControlState {
@@ -81,8 +99,19 @@ export interface DiagnosisPayload {
   flagged_assets?: Array<{ name: string; severity: string; detail: string }>;
 }
 
+export interface MaintenancePriority {
+  rank: number;
+  task: string;
+  when: string;
+  discipline: string;
+  severity: string;
+  impact?: string;
+  detail?: string;
+  evidence?: string[];
+}
+
 export interface AiResponsePayload {
-  type?: 'shift_report' | 'what_if' | 'chat';
+  type?: 'shift_report' | 'what_if' | 'chat' | 'maintenance_priorities';
   answer?: string;
   response?: string;
   summary?: string;
@@ -98,6 +127,12 @@ export interface AiResponsePayload {
   risk_level?: string;
   steps?: Array<{ step?: number; event?: string; consequence?: string }>;
   operator_actions?: string[];
+  // Maintenance-priority card
+  priorities?: MaintenancePriority[];
+  window?: string;
+  samples_7d?: number;
+  samples_30d?: number;
+  note?: string;
 }
 
 export interface StreamMessage {
@@ -116,7 +151,7 @@ export interface AlertEvent {
   timestamp: string;
 }
 
-export type ChatMessageType = 'ai' | 'user' | 'thinking' | 'diagnosis' | 'shift_report' | 'what_if';
+export type ChatMessageType = 'ai' | 'user' | 'thinking' | 'diagnosis' | 'shift_report' | 'what_if' | 'maintenance_priorities';
 
 export interface ChatMessage {
   id: string;

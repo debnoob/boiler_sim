@@ -138,6 +138,16 @@ export function LiveTags() {
         <TagRow label="Steam / Fuel"   value={d ? `${d.steamToFuel.toFixed(2)} kg/m³` : '--'} status={sfStatus} />
         <TagRow label="Tube Health"    value={t ? `${t.tube_health.toFixed(1)} %` : '--'} status={tubeStatus} />
 
+        {/* ── ENVIRONMENT ──────────────────────────────────────────── */}
+        <SectionHead label="Environment" />
+        <TagRow label="Ambient Temp"   value={t?.ambient_temp != null ? `${t.ambient_temp.toFixed(1)} °C` : '--'} />
+        <TagRow label="Humidity"       value={t?.humidity != null ? `${t.humidity.toFixed(0)} %` : '--'} />
+        <TagRow
+          label="Fuel Quality"
+          value={t?.fuel_lhv != null ? `${t.fuel_lhv.toFixed(2)} MJ/m³` : '--'}
+          status={t?.fuel_lhv == null ? 'neutral' : t.fuel_lhv < 34.5 || t.fuel_lhv > 36.5 ? 'warn' : 'ok'}
+        />
+
         {/* ── SAFETY ───────────────────────────────────────────────── */}
         <SectionHead label="Safety" />
         <TagRow label="Flame Status"   value={t ? (t.flame_status ? 'ON' : 'OFF') : '--'} status={flameStatus} />

@@ -1,0 +1,15 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+.claude
+.trunk
+.git
+.gitignore
+frontend/
+data/

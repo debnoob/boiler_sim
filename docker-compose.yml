@@ -1,0 +1,116 @@
+version: '3.8'
+
+services:
+  broker:
+    image: eclipse-mosquitto:latest
+    container_name: nexus-broker
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
+  boiler-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: nexus-boiler-engine
+    command: python engine/boiler_engine.py
+    stdin_open: true
+    tty: true
+    environment:
+      - MQTT_BROKER_HOST=broker
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+  anomaly-detector:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: nexus-anomaly-detector
+    command: python engine/anomaly_detector.py
+    environment:
+      - MQTT_BROKER_HOST=broker
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+  forecasting-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: nexus-forecasting-engine
+    command: python engine/forecasting_engine.py
+    environment:
+      - MQTT_BROKER_HOST=broker
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+  historian:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: nexus-historian
+    command: python engine/historian_service.py
+    environment:
+      - MQTT_BROKER_HOST=broker
+      - HISTORIAN_DB_PATH=/app/historian/nexus_historian.db
+      - HISTORIAN_RETENTION_DAYS=92
+    volumes:
+      - historian-data:/app/historian
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+  rag-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: nexus-rag-server
+    command: uvicorn engine.rag_server:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - QDRANT_URL=${QDRANT_URL:-}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ai-analyst:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: nexus-ai-analyst
+    command: python engine/ai_analyst.py
+    environment:
+      - MQTT_BROKER_HOST=broker
+      - RAG_SERVER_URL=http://rag-server:8001
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=nexus-analyst:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - broker
+      - rag-server
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: nexus-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_MQTT_URL=ws://localhost:9001
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+volumes:
+  historian-data:

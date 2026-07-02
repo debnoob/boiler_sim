@@ -9,9 +9,10 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 from collections import deque
 import time
+import os
 
 # MQTT Config
-BROKER = "localhost"
+BROKER = os.environ.get("MQTT_BROKER_HOST", "localhost")
 PORT = 1883
 TOPIC_SUB = "factory/pumphouse4/boiler/unit01/heartbeat"
 TOPIC_PUB = "factory/pumphouse4/boiler/unit01/ai/anomaly_score"

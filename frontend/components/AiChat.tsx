@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Bot, Check, ChevronLeft, ChevronRight, FileText, FlaskConical, RefreshCw } from 'lucide-react';
+import { Bot, Check, ChevronLeft, ChevronRight, FileText, FlaskConical, RefreshCw, Wrench } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
 import { formatRich, preprocessMessage } from '@/lib/utils';
@@ -290,6 +290,7 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
             {[
               ['Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
               ['Efficiency', 'Why is efficiency trending the way it is? Explain using current sensor values.'],
+              ['OEE', 'Calculate current shift OEE and show availability, performance, and quality factors.'],
               ['Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
               ['What-if: drum', 'What if drum level drops to 180mm?'],
               ['Maintenance priorities', 'What should the maintenance team prioritize this week, in order?'],
@@ -483,6 +484,17 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <WhatIfCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.type === 'maintenance_priorities') {
+    return (
+      <div className="flex items-start gap-2 slide-in">
+        <AiAvatar />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <MaintenancePrioritiesCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
         </div>
       </div>
     );
@@ -701,6 +713,89 @@ function WhatIfCard({ data, ts }: { data: AiResponsePayload; ts: string }) {
       </div>
       <div style={{ padding: '7px 16px', background: 'var(--ai-chip-bg)', borderTop: '1px solid var(--ai-bubble-bd)', fontSize: 10, color: 'var(--tx-muted)' }}>
         Simulated from live telemetry • Nexus AI • {ts}
+      </div>
+    </div>
+  );
+}
+
+const WHEN_COLORS: Record<string, string> = {
+  'now': '#ef4444',
+  'this shift': '#f97316',
+  'this week': '#f59e0b',
+  'next outage': '#3b82f6',
+};
+
+function MaintenancePrioritiesCard({ data, ts }: { data: AiResponsePayload; ts: string }) {
+  if (!data) return null;
+  const priorities = data.priorities || [];
+
+  return (
+    <div style={{ background: 'var(--bg-ai)', borderRadius: '12px 12px 12px 4px', overflow: 'hidden', border: '1px solid var(--ai-bubble-bd)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.5)' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--ai-bubble-bd)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Wrench size={14} color="var(--accent)" />
+          <span style={{ fontWeight: 700, color: 'var(--accent-text)', fontSize: 13 }}>Maintenance Priorities</span>
+        </div>
+        {data.window && (
+          <span style={{ background: 'var(--ai-user-bg)', color: 'var(--accent-text)', fontSize: 9, padding: '2px 9px', borderRadius: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em' }}>{data.window}</span>
+        )}
+      </div>
+      <div style={{ padding: '12px 16px' }}>
+        {data.summary && <p style={{ fontSize: 12, color: 'var(--tx-label)', lineHeight: 1.6, marginBottom: 10 }}>{data.summary}</p>}
+
+        {priorities.length === 0 ? (
+          <p style={{ fontSize: 12, color: 'var(--tx-secondary)', lineHeight: 1.6 }}>{data.answer}</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {priorities.map((p) => {
+              const sev = (p.severity || 'warning').toLowerCase();
+              const sevColor = SEVERITY_BADGE[sev] || '#f59e0b';
+              const whenColor = WHEN_COLORS[(p.when || '').toLowerCase()] || 'var(--accent)';
+              return (
+                <div key={p.rank} style={{ background: 'var(--ai-chip-bg)', border: '1px solid var(--ai-bubble-bd)', borderLeft: `3px solid ${sevColor}`, borderRadius: 8, padding: '9px 11px' }}>
+                  {/* header row: rank + when + discipline */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+                    <span style={{ flexShrink: 0, minWidth: 18, height: 18, borderRadius: '50%', background: sevColor, color: '#09090b', fontSize: 10, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px' }}>{p.rank}</span>
+                    <span style={{ background: whenColor, color: '#09090b', fontSize: 8.5, padding: '2px 7px', borderRadius: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{p.when}</span>
+                    <span style={{ fontSize: 10, color: 'var(--tx-muted)', marginLeft: 'auto' }}>{p.discipline}</span>
+                  </div>
+
+                  {/* task headline */}
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--tx-primary)', lineHeight: 1.4, marginBottom: 4 }}>{p.task}</div>
+
+                  {/* why / do */}
+                  {p.impact && (
+                    <div style={{ fontSize: 11, color: 'var(--tx-secondary)', lineHeight: 1.5, marginBottom: 2 }}>
+                      <span style={{ color: sevColor, fontWeight: 700 }}>Why: </span>{p.impact}
+                    </div>
+                  )}
+                  {p.detail && (
+                    <div style={{ fontSize: 11, color: 'var(--tx-secondary)', lineHeight: 1.5, marginBottom: p.evidence && p.evidence.length ? 5 : 0 }}>
+                      <span style={{ color: 'var(--accent-text)', fontWeight: 700 }}>Do: </span>{p.detail}
+                    </div>
+                  )}
+
+                  {/* evidence chips */}
+                  {p.evidence && p.evidence.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {p.evidence.map((e, i) => (
+                        <span key={i} style={{ fontSize: 9.5, color: 'var(--tx-muted)', background: 'var(--ai-think-bg)', border: '1px solid var(--ai-bubble-bd)', borderRadius: 5, padding: '2px 6px', lineHeight: 1.4 }}>{e}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {data.note && (
+          <p style={{ fontSize: 10, color: 'var(--tx-muted)', fontStyle: 'italic', marginTop: 10 }}>{data.note}</p>
+        )}
+      </div>
+      <div style={{ padding: '7px 16px', background: 'var(--ai-chip-bg)', borderTop: '1px solid var(--ai-bubble-bd)', fontSize: 10, color: 'var(--tx-muted)' }}>
+        {data.samples_7d != null && `${data.samples_7d} samples (7d)`}
+        {data.samples_30d != null && ` • ${data.samples_30d} (30d)`} • Nexus AI • {ts}
       </div>
     </div>
   );

@@ -17,6 +17,12 @@ venv/
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Local historian runtime data
+historian/
+*.db
+*.db-shm
+*.db-wal
+
 # Node/frontend caches and dependencies
 node_modules/
 .next/

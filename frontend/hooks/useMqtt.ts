@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useNexusStore } from '@/lib/store';
 import type { HeartbeatPayload, AnomalyPayload, AlertPayload, DiagnosisPayload, AiResponsePayload, AlertEvent, MoiraiForecastPayload, ControlActionPayload } from '@/types/telemetry';
 
-const MQTT_URL = 'ws://localhost:9001';
+const MQTT_URL = process.env.NEXT_PUBLIC_MQTT_URL || 'ws://localhost:9001';
 const TOPIC = 'factory/pumphouse4/boiler/#';
 const ALERT_THROTTLE_MS = 3000;
 
@@ -98,6 +98,7 @@ export function useMqtt() {
             // Derive a readable type: shift_report or what_if are structured; anything else is a plain chat answer
             const msgType = data.type === 'shift_report' ? 'shift_report'
               : data.type === 'what_if' ? 'what_if'
+              : data.type === 'maintenance_priorities' ? 'maintenance_priorities'
               : 'ai';
             store.addStream(
               `⬡ AI response received (${msgType})`,

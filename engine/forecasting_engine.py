@@ -3,11 +3,12 @@ import json
 import time
 import numpy as np
 from collections import deque
+import os
 
 # ============================================================
 # MQTT CONFIG
 # ============================================================
-BROKER = "localhost"
+BROKER = os.environ.get("MQTT_BROKER_HOST", "localhost")
 PORT = 1883
 HEARTBEAT_TOPIC = "factory/pumphouse4/boiler/unit01/system/heartbeat"
 FORECAST_TOPIC  = "factory/pumphouse4/boiler/unit01/ai/forecast"
