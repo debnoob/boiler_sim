@@ -42,10 +42,11 @@ A real-time industrial boiler monitoring demo built on MQTT, a physics simulatio
 - **Sensor lag** is modeled using exponential smoothing buffers — pressure has a 5-tap buffer, flue gas a 12-tap, replicating the sluggish response of real thermocouple and pressure transmitter installations
 - **Gaussian noise** is applied on output, scaled per-sensor by realistic sigma percentages
 
-**Four operating modes** that you can switch live from the terminal:
+**Five operating modes** that you can switch live from the terminal:
 
 | Mode | Key | What Happens |
 |---|---|---|
+| `IDEAL` | `i` | Clean reference run: no faults, no degradation, neutral environment, stable load |
 | `NORMAL` | `n` | Controlled operation, all setpoints met |
 | `DEGRADING` | `d` | Tube scaling fault — fuel flow climbs, flue gas temp rises, efficiency drops linearly |
 | `CRITICAL` | `c` | Feedwater control struggles, drum level drops toward dry-fire threshold |
@@ -220,7 +221,7 @@ python engine/historian_service.py
 # Open index.html in a browser
 ```
 
-Switch scenarios from Terminal 1 by pressing `d` (degrade), `c` (critical), `f` (fault), `r` (reset).
+Switch scenarios from Terminal 1 by pressing `i` (ideal), `d` (degrade), `c` (critical), `f` (fault), `s` (stop/back to normal), or `r` (reset).
 
 ### Local Historian
 
@@ -235,4 +236,3 @@ control-action topics, then stores them in SQLite at
   questions through safe query functions, not free-form SQL.
 - Docker Compose includes an optional `historian` service if you later want to
   run the whole stack containerized.
-

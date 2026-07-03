@@ -210,6 +210,7 @@ with **real thermodynamic relationships**, not random numbers:
 
   | Mode | Key | Behaviour |
   |---|---|---|
+  | IDEAL | `i` | Clean reference run: no faults, no degradation, neutral environment, stable load |
   | NORMAL | `n` / `s` | Controlled operation, all setpoints met |
   | DEGRADING | `d` | Tube scaling — fuel↑, flue-gas temp↑, efficiency↓ (linear ramp) |
   | CRITICAL | `c` | Feedwater struggles, drum level drops toward dry-fire |
@@ -354,7 +355,7 @@ Base: `factory/pumphouse4/boiler/unit01`
 
 # 1. Python services (separate terminals)
 pip install -r requirements.txt
-python engine/boiler_engine.py        # physics (press d/c/f/r to drive scenarios)
+python engine/boiler_engine.py        # physics (press i/d/c/f/s/r to drive scenarios)
 python engine/anomaly_detector.py     # Isolation Forest
 python engine/forecasting_engine.py   # Moirai / statistical forecaster
 export OLLAMA_BASE_URL=http://<host>:11434

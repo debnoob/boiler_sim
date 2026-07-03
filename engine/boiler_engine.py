@@ -171,7 +171,7 @@ class BoilerState:
         self.reset()
 
     def reset(self):
-        # Operating mode: 0=Normal, 1=Degrading, 2=Critical, 3=Fault
+        # Operating mode: 0=Normal, 1=Degrading, 2=Critical, 3=Fault, 4=Ideal
         self.mode = 0
         self.tick = 0
         self.fault_injected = False
@@ -265,6 +265,8 @@ class BoilerPhysicsEngine:
                                            output_min=0, output_max=self.MAX_AIR_FLOW)
 
     def gaussian_noise(self, value, sigma_pct=0.008):
+        if self.state.mode == 4:
+            return value
         sigma = abs(value) * sigma_pct
         return value + np.random.normal(0, sigma)
 
@@ -381,7 +383,10 @@ class BoilerPhysicsEngine:
         dt = self.DT
 
         # ---- Environment (ambient + fuel quality) ----
-        ambient_temp, humidity, fuel_lhv = self.environment.update(s.tick)
+        if scenario == "ideal":
+            ambient_temp, humidity, fuel_lhv = 25.0, 55.0, self.LHV_GAS
+        else:
+            ambient_temp, humidity, fuel_lhv = self.environment.update(s.tick)
         s.ambient_temp = ambient_temp
         s.humidity     = humidity
         s.fuel_lhv     = fuel_lhv
@@ -394,8 +399,9 @@ class BoilerPhysicsEngine:
             UA_factor = 0.0
 
         # ---- Load variation (sinusoidal steam demand) ----
-        load_variation = math.sin(s.tick * 0.05) * 80
-        steam_demand_kghr = 2300.0 + load_variation + np.random.normal(0, 20)
+        load_variation = 0.0 if scenario == "ideal" else math.sin(s.tick * 0.05) * 80
+        demand_noise = 0.0 if scenario == "ideal" else np.random.normal(0, 20)
+        steam_demand_kghr = 2300.0 + load_variation + demand_noise
         steam_demand_kgs  = max(steam_demand_kghr / 3600.0, 0.0)
 
         # ---- Effective setpoints (AI overrides take precedence when set) ----
@@ -462,7 +468,7 @@ class BoilerPhysicsEngine:
         s.steam_pressure = self.lag_filter(s.pressure_buffer, P_drum, 0.75)
         s.steam_temperature = self.lag_filter(
             s.temp_buffer,
-            steam_props["T_sat"] + 5.0 + np.random.normal(0, 0.5),
+            steam_props["T_sat"] + 5.0 + (0.0 if scenario == "ideal" else np.random.normal(0, 0.5)),
             0.85
         )
         s.steam_flow    = steam_demand_kghr
@@ -473,7 +479,7 @@ class BoilerPhysicsEngine:
         s.feedwater_temp = (95.0
                             + (steam_demand_kghr / 2300.0 - 1.0) * 20.0
                             + (s.ambient_temp - 25.0) * 0.3
-                            + np.random.normal(0, 1.2))
+                            + (0.0 if scenario == "ideal" else np.random.normal(0, 1.2)))
         s.fuel_flow      = fuel_flow_cmd
         s.air_flow       = air_flow_cmd
 
@@ -482,7 +488,8 @@ class BoilerPhysicsEngine:
         stoich_afr = 11.0
         excess_air_frac = (air_fuel_ratio / stoich_afr) - 1.0 if fuel_flow_cmd > 0 else 0
         s.o2_percent = max(0.5, 21.0 * (excess_air_frac / (1 + excess_air_frac + 1e-6))
-                          * fp["air_damper_position"] + np.random.normal(0, 0.15))
+                          * fp["air_damper_position"]
+                          + (0.0 if scenario == "ideal" else np.random.normal(0, 0.15)))
         if not fp["ignition_active"]:
             s.o2_percent = 20.9  # atmospheric when no combustion
 
@@ -495,7 +502,7 @@ class BoilerPhysicsEngine:
                     + firing_effect + excess_air_effect + ambient_effect)
         s.flue_gas_temp = self.lag_filter(
             s.fluegas_buffer,
-            base_fgt + np.random.normal(0, 2.5),
+            base_fgt + (0.0 if scenario == "ideal" else np.random.normal(0, 2.5)),
             0.90
         )
 
@@ -504,7 +511,10 @@ class BoilerPhysicsEngine:
         s.safety_valve = 1 if s.steam_pressure > 13.5 else 0
 
         # Tube health degrades with UA_factor
-        s.tube_health = max(45.0, min(97.0, UA_factor * 97.0 + np.random.normal(0, 0.1)))
+        s.tube_health = max(
+            45.0,
+            min(97.0, UA_factor * 97.0 + (0.0 if scenario == "ideal" else np.random.normal(0, 0.1)))
+        )
 
         # KPIs
         s.efficiency = self.calculate_efficiency(
@@ -518,7 +528,7 @@ class BoilerPhysicsEngine:
     def get_readings(self):
         s = self.state
         fp = self.faults.params
-        mode_names = {0: "NORMAL", 1: "DEGRADING", 2: "CRITICAL", 3: "FAULT"}
+        mode_names = {0: "NORMAL", 1: "DEGRADING", 2: "CRITICAL", 3: "FAULT", 4: "IDEAL"}
 
         # Apply sensor bias fault to drum level reading only
         visible_drum_level = s.drum_level + fp["level_sensor_bias"]
@@ -579,6 +589,25 @@ class NexusMQTTPublisher:
         self.scenario      = "normal"
         self.scenario_tick = 0
         self.max_degradation_ticks = 30
+
+    def reset_to_clean_operation(self, reset_state=False):
+        """Return the boiler to a healthy no-fault operating baseline."""
+        if reset_state:
+            self.engine.state.reset()
+            self.engine.reset_ode_inventory()
+        s = self.engine.state
+        self.engine.faults.reset()
+        self.engine.pressure_pid.reset()
+        self.engine.drumlevel_pid.reset()
+        self.engine.o2_pid.reset()
+        s.ai_autopilot_active = False
+        s.o2_setpoint_override = None
+        s.pressure_setpoint_override = None
+        s.degradation_rate_factor = 1.0
+        s.firing_reduction_pct = 0.0
+        s.soot_blow_pending = False
+        s.current_degradation = 0.0
+        s.degradation_factor = 0.0
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -687,6 +716,18 @@ class NexusMQTTPublisher:
             s.current_degradation = 0.0
             self.engine.tick(scenario="normal", degradation=0.0)
 
+        elif self.scenario == "ideal":
+            s.mode = 4
+            self.engine.faults.reset()
+            s.ai_autopilot_active = False
+            s.o2_setpoint_override = None
+            s.pressure_setpoint_override = None
+            s.degradation_rate_factor = 1.0
+            s.firing_reduction_pct = 0.0
+            s.soot_blow_pending = False
+            s.current_degradation = 0.0
+            self.engine.tick(scenario="ideal", degradation=0.0)
+
         elif self.scenario == "degrading":
             s.mode = 1
             # Integrate degradation so the AI can throttle the accumulation *rate*.
@@ -791,6 +832,8 @@ class NexusMQTTPublisher:
 
         print(f"\n{'='*60}")
         print(f"  BOILER-01 | {self.timestamp()} | MODE: {mode} | DEG: {deg:.3f}{fault_label}")
+        if mode == "IDEAL":
+            print("  IDEAL MODE ACTIVE: clean reference run, no faults, no degradation, stable load")
         print(f"{'='*60}")
         print(f"  Steam:    P={tags['steam_pressure']:.2f} bar  "
               f"T={tags['steam_temperature']:.1f}°C  "
@@ -832,7 +875,7 @@ class NexusMQTTPublisher:
 
         self.running = True
         print(f"[{self.timestamp()}] Starting data stream — scenario: {self.scenario}")
-        print(f"[{self.timestamp()}] Commands: [n]ormal [d]egrade [c]ritical [f]ault [r]eset [q]uit\n")
+        print(f"[{self.timestamp()}] Commands: [i]deal [n]ormal [d]egrade [c]ritical [f]ault [s]top [r]eset [q]uit\n")
 
         input_thread = threading.Thread(target=self.handle_input, daemon=True)
         input_thread.start()
@@ -848,7 +891,7 @@ class NexusMQTTPublisher:
     def handle_input(self):
         import sys
         import select
-        print("[INPUT] Press n/d/c/f/r/s/q then Enter to control simulation\n")
+        print("[INPUT] Press i/n/d/c/f/s/r/q then Enter to control simulation\n")
         sys.stdout.flush()
         while self.running:
             try:
@@ -859,17 +902,20 @@ class NexusMQTTPublisher:
                     if cmd == 'n':
                         self.scenario = "normal"
                         self.scenario_tick = 0
-                        self.engine.faults.reset()
-                        self.engine.pressure_pid.reset()
-                        self.engine.drumlevel_pid.reset()
-                        self.engine.o2_pid.reset()
+                        self.reset_to_clean_operation(reset_state=False)
                         print(f"\n>>> Switched to NORMAL operation\n")
+                        sys.stdout.flush()
+                    elif cmd == 'i':
+                        self.scenario = "ideal"
+                        self.scenario_tick = 0
+                        self.reset_to_clean_operation(reset_state=True)
+                        print(f"\n>>> IDEAL MODE — no faults, no degradation, neutral environment, stable load\n")
                         sys.stdout.flush()
                     elif cmd == 's':
                         self.scenario = "normal"
                         self.scenario_tick = 0
-                        self.engine.faults.reset()
-                        print(f"\n>>> STOPPED DEGRADATION — Switched to NORMAL operation\n")
+                        self.reset_to_clean_operation(reset_state=True)
+                        print(f"\n>>> STOPPED — Switched back to NORMAL simulation\n")
                         sys.stdout.flush()
                     elif cmd == 'd':
                         self.scenario = "degrading"
@@ -887,14 +933,9 @@ class NexusMQTTPublisher:
                         print(f"\n>>> FAULT INJECTED — flame failure + ESD\n")
                         sys.stdout.flush()
                     elif cmd == 'r':
-                        self.engine.state.reset()
-                        self.engine.reset_ode_inventory()
-                        self.engine.faults.reset()
-                        self.engine.pressure_pid.reset()
-                        self.engine.drumlevel_pid.reset()
-                        self.engine.o2_pid.reset()
                         self.scenario = "normal"
                         self.scenario_tick = 0
+                        self.reset_to_clean_operation(reset_state=True)
                         print(f"\n>>> System RESET — back to normal\n")
                         sys.stdout.flush()
                     elif cmd == 'q':

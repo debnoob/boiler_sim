@@ -123,6 +123,10 @@ export interface AiResponsePayload {
   highlights?: string[];
   follow_ups?: string[];
   shift_duration?: string;
+  shift_label?: string;
+  shift_start?: string;
+  shift_end?: string;
+  data_source?: string;
   scenario?: string;
   risk_level?: string;
   steps?: Array<{ step?: number; event?: string; consequence?: string }>;

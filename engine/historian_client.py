@@ -20,9 +20,18 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_DB_PATH = "historian/nexus_historian.db"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DB_PATH = str(PROJECT_ROOT / "historian" / "nexus_historian.db")
 HISTORIAN_DB_PATH = os.environ.get("HISTORIAN_DB_PATH", DEFAULT_DB_PATH)
 RETENTION_DAYS = int(os.environ.get("HISTORIAN_RETENTION_DAYS", "92"))
+
+# Storing the full heartbeat payload as JSON on every row is ~55% of each row's
+# bytes and is never read back (queries use the typed columns; only
+# historian_events.payload_json is parsed). Off by default to roughly halve the
+# telemetry_raw footprint. Set HISTORIAN_STORE_RAW_PAYLOAD=true to retain it.
+STORE_RAW_PAYLOAD = os.environ.get(
+    "HISTORIAN_STORE_RAW_PAYLOAD", "false"
+).strip().lower() in ("1", "true", "yes", "on")
 
 NUMERIC_TAGS = [
     "steam_pressure",
@@ -257,6 +266,81 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+# ============================================================
+# SHIFT-WINDOW QUERIES (feed the end-of-shift report for a real 8h shift)
+# ============================================================
+def fetch_telemetry_window(
+    start: datetime, end: datetime, db_path: str | None = None
+) -> list[dict[str, Any]]:
+    """
+    Return telemetry_raw rows in [start, end) as dicts with an epoch timestamp
+    and a tag map, ordered oldest-first. Used to recompute shift OEE/uptime for
+    the true shift window (survives analyst restarts). start/end are tz-aware.
+    """
+    init_db(db_path)
+    cols = ", ".join(NUMERIC_TAGS)
+    rows: list[dict[str, Any]] = []
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            f"SELECT ts, mode, {cols} FROM telemetry_raw "
+            f"WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+            (iso(start), iso(end)),
+        )
+        for r in cur:
+            rows.append({
+                "ts_epoch": parse_timestamp(r["ts"]).timestamp(),
+                "mode": r["mode"] or "NORMAL",
+                "tags": {tag: r[tag] for tag in NUMERIC_TAGS},
+            })
+    return rows
+
+
+def count_events_window(
+    start: datetime,
+    end: datetime,
+    db_path: str | None = None,
+    anomaly_gap_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """
+    Alert counts by severity + a deduped anomaly-episode count in [start, end).
+    Anomaly ticks stream at ~1 Hz, so consecutive is_anomaly hits within
+    anomaly_gap_seconds are collapsed into one episode (mirrors the live
+    per-diagnosis counting in ShiftStats).
+    """
+    init_db(db_path)
+    alerts = {"CRITICAL": 0, "HIGH": 0, "WARNING": 0, "LOW": 0}
+    anomaly_episodes = 0
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "SELECT severity, COUNT(*) AS n FROM historian_events "
+            "WHERE event_type = 'alert' AND ts >= ? AND ts < ? GROUP BY severity",
+            (iso(start), iso(end)),
+        )
+        for r in cur:
+            sev = (r["severity"] or "").upper()
+            if sev in alerts:
+                alerts[sev] += r["n"]
+
+        cur = conn.execute(
+            "SELECT ts, payload_json FROM historian_events "
+            "WHERE event_type = 'anomaly_score' AND ts >= ? AND ts < ? ORDER BY ts ASC",
+            (iso(start), iso(end)),
+        )
+        last_episode_t = None
+        for r in cur:
+            try:
+                is_anom = bool(json.loads(r["payload_json"]).get("is_anomaly"))
+            except (TypeError, ValueError):
+                is_anom = False
+            if not is_anom:
+                continue
+            t = parse_timestamp(r["ts"]).timestamp()
+            if last_episode_t is None or (t - last_episode_t) > anomaly_gap_seconds:
+                anomaly_episodes += 1
+            last_episode_t = t
+    return {"alerts": alerts, "anomaly_episodes": anomaly_episodes}
+
+
 def insert_heartbeat(payload: dict[str, Any], db_path: str | None = None) -> None:
     init_db(db_path)
     tags = payload.get("tags", {}) if isinstance(payload.get("tags"), dict) else {}
@@ -281,7 +365,13 @@ def insert_heartbeat(payload: dict[str, Any], db_path: str | None = None) -> Non
         "degradation_factor": _float_or_none(payload.get("degradation_factor")),
         **values,
         "control_json": json.dumps(payload.get("control", {}), separators=(",", ":")),
-        "payload_json": json.dumps(payload, separators=(",", ":"), default=str),
+        # Full raw payload is redundant with the typed columns and never queried
+        # for telemetry_raw; store "{}" unless explicitly retained (see flag above).
+        "payload_json": (
+            json.dumps(payload, separators=(",", ":"), default=str)
+            if STORE_RAW_PAYLOAD
+            else "{}"
+        ),
     }
     placeholders = ",".join("?" for _ in columns)
     with connect(db_path) as conn:

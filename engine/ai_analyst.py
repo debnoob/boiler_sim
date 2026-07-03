@@ -15,6 +15,7 @@ import time
 import uuid
 import requests
 from collections import deque
+from datetime import datetime, timedelta
 from threading import Lock
 from dotenv import load_dotenv
 load_dotenv()
@@ -37,11 +38,15 @@ try:
         answer_historical_metric_question,
         answer_maintenance_priority_question,
         build_historian_context,
+        fetch_telemetry_window,
+        count_events_window,
     )
 except Exception:
     answer_historical_metric_question = None
     answer_maintenance_priority_question = None
     build_historian_context = None
+    fetch_telemetry_window = None
+    count_events_window = None
 
 # ============================================================
 # MANUAL KNOWLEDGE (in-prompt, keyword-routed — no vector DB)
@@ -88,7 +93,7 @@ PORT   = 1883
 
 # Ollama settings
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
+OLLAMA_MODEL    = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
 OLLAMA_URL      = f"{OLLAMA_BASE_URL}/api/chat"
 OLLAMA_NUM_CTX  = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 # Thinking/reasoning models (Qwen3, DeepSeek-R1, etc.) emit <think>...</think> and
@@ -175,6 +180,17 @@ OEE_MIN_STEAM_TEMP_C = 170.0
 OEE_MAX_STEAM_TEMP_C = 195.0
 OEE_MIN_DRUM_LEVEL_MM = 280.0
 OEE_MAX_DRUM_LEVEL_MM = 600.0
+
+# ── Shift schedule ──────────────────────────────────────────────────────────
+# Fixed clock-based 8h shifts. The end-of-shift report covers the current shift
+# window [shift_start, now], not "since the analyst process started". Boundaries
+# are the local-clock start hours; override with SHIFT_START_HOURS="6,14,22".
+SHIFT_LENGTH_HOURS = int(os.environ.get("SHIFT_LENGTH_HOURS", "8"))
+SHIFT_START_HOURS = sorted({
+    int(h) for h in os.environ.get("SHIFT_START_HOURS", "6,14,22").split(",") if h.strip() != ""
+})
+# Friendly names for the default day/swing/night schedule.
+_SHIFT_NAMES = {6: "Day", 14: "Swing", 22: "Night"}
 
 OPTIMAL = {
     "o2_percent_low": 2.0,
@@ -364,6 +380,8 @@ def _is_current_value_question(question, tag):
     if not tag:
         return False
     q = question.lower()
+    if _is_control_loop_question(q):
+        return False
     historical_terms = (
         "yesterday", "today", "shift", "last ", "past ", "week", "month",
         "history", "historian", "trend", "average", "avg", "minimum",
@@ -383,9 +401,29 @@ def _is_current_value_question(question, tag):
     return any(term in q for term in current_terms) and not any(term in q for term in diagnostic_terms)
 
 
-def build_current_value_answer(question, latest_reading):
+def _is_control_loop_question(question):
+    q = (question or "").lower()
+    loop_terms = (
+        "pid", "control loop", "controller", "loop", "hunting", "oscillat",
+        "stable", "stability", "windup", "saturated", "saturation",
+        "overshoot", "overcorrect", "setpoint", "tuning", "gain",
+        "kp", "ki", "kd"
+    )
+    process_terms = (
+        "pressure", "steam", "o2", "o₂", "oxygen", "air", "combustion",
+        "drum", "level", "feedwater", "fuel"
+    )
+    return any(term in q for term in loop_terms) and any(term in q for term in process_terms)
+
+
+def build_current_value_answer(question, latest_reading, force=False):
+    # force=True: the intent was already decided (e.g. by the LLM router) so skip
+    # the brittle keyword gate. force=False keeps the keyword heuristic as a fast
+    # fallback for when the router LLM is unreachable.
     tag = _find_requested_tag(question)
-    if not _is_current_value_question(question, tag):
+    if not force and not _is_current_value_question(question, tag):
+        return None
+    if not tag:
         return None
     if not latest_reading:
         return "No live telemetry has arrived yet, so I cannot read that value right now."
@@ -425,6 +463,65 @@ def build_current_value_answer(question, latest_reading):
     return "\n".join(lines)
 
 
+def _series_stats(samples, tag):
+    values = []
+    for sample in samples:
+        val = sample.get("tags", {}).get(tag)
+        try:
+            values.append(float(val))
+        except (TypeError, ValueError):
+            pass
+    if not values:
+        return None
+    return {
+        "first": values[0],
+        "last": values[-1],
+        "min": min(values),
+        "max": max(values),
+        "span": max(values) - min(values),
+        "n": len(values),
+    }
+
+
+def _fmt_span(stats, unit, decimals=2):
+    if not stats:
+        return "unavailable"
+    return (
+        f"{stats['last']:.{decimals}f} {unit} now; "
+        f"range {stats['min']:.{decimals}f}-{stats['max']:.{decimals}f} {unit} "
+        f"(span {stats['span']:.{decimals}f}) over {stats['n']} samples"
+    )
+
+
+def build_control_loop_context(question, samples, brief):
+    if not _is_control_loop_question(question):
+        return ""
+
+    q = question.lower()
+    lines = ["CONTROL LOOP STABILITY CONTEXT:"]
+    if "pressure" in q or "steam" in q or "fuel" in q or "pid" in q:
+        lines.append(f"- Pressure loop PV: {_fmt_span(_series_stats(samples, 'steam_pressure'), 'bar', 3)}")
+        lines.append(f"- Pressure loop output: fuel flow {_fmt_span(_series_stats(samples, 'fuel_flow'), 'm3/hr', 2)}")
+        lines.append("- Pressure setpoint: 10.0 bar; PID output drives fuel_flow.")
+    if "o2" in q or "o₂" in q or "oxygen" in q or "air" in q or "combustion" in q or "pid" in q:
+        lines.append(f"- O2 loop PV: {_fmt_span(_series_stats(samples, 'o2_percent'), '%', 3)}")
+        lines.append(f"- O2 loop output: air flow {_fmt_span(_series_stats(samples, 'air_flow'), 'm3/hr', 1)}")
+        lines.append("- O2 setpoint: 3.2%; PID output drives air_flow.")
+    if "drum" in q or "level" in q or "feedwater" in q or "pid" in q:
+        lines.append(f"- Drum level loop PV: {_fmt_span(_series_stats(samples, 'drum_level'), 'mm', 1)}")
+        lines.append(f"- Drum level output: feedwater flow {_fmt_span(_series_stats(samples, 'feedwater_flow'), 'kg/hr', 1)}")
+        lines.append("- Drum level setpoint: 400 mm; PID trim plus steam-flow feedforward drives feedwater_flow.")
+
+    if brief.pid_issues:
+        lines.append("- Deterministic PID detector found:")
+        for issue in brief.pid_issues:
+            lines.append(f"  {issue.loop}: {issue.symptom} Diagnosis: {issue.diagnosis}")
+    else:
+        lines.append("- Deterministic PID detector found no hunting/windup issue in the recent window.")
+    lines.append("Answer the operator's stability question directly first, then explain the evidence.")
+    return "\n".join(lines) + "\n\n"
+
+
 def is_oee_question(question):
     q = question.lower()
     oee_terms = (
@@ -445,6 +542,16 @@ def _pct(value):
 
 def _kg(value):
     return f"{value:.1f} kg"
+
+
+def _wants_oee_working(question):
+    q = question.lower()
+    detail_terms = (
+        "show calculation", "show the calculation", "step by step",
+        "working", "workings", "breakdown", "show math", "show maths",
+        "formula", "method", "how do you calculate", "how is it calculated"
+    )
+    return any(term in q for term in detail_terms)
 
 
 def _format_oee_formula(snapshot):
@@ -483,30 +590,44 @@ def build_oee_answer(question, stats_snapshot):
     rated_steam_kg = oee.get("rated_steam_kg", 0.0)
     good_steam_kg = oee.get("good_steam_kg", 0.0)
     bad_steam_kg = max(0.0, actual_steam_kg - good_steam_kg)
+    show_working = _wants_oee_working(question)
 
-    if "formula" in q or "how" in q or "method" in q:
+    if show_working and ("formula" in q or "method" in q or "how" in q):
         return _format_oee_formula(stats_snapshot)
 
     if "availability" in q and "oee" not in q:
-        return (
-            f"Availability is **{_pct(availability)}** for this shift window. "
-            f"Calculation: **{available_seconds:.0f} s available / {planned_seconds:.0f} s planned**. "
-            "I count the boiler as available when the flame is proven and the unit is not in FAULT mode."
-        )
+        if show_working:
+            return (
+                f"Availability is **{_pct(availability)}** for this shift window. "
+                f"Calculation: **{available_seconds:.0f} s available / {planned_seconds:.0f} s planned**. "
+                "I count the boiler as available when the flame is proven and the unit is not in FAULT mode."
+            )
+        return f"Availability is **{_pct(availability)}** for this shift window."
 
     if "performance" in q and "oee" not in q:
-        return (
-            f"Performance is **{_pct(performance)}** for this shift window. "
-            f"Calculation: **{_kg(available_steam_kg)} steam during available time / {_kg(rated_steam_kg)} rated steam** "
-            f"during available time, using **{OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr** as the rated basis."
-        )
+        if show_working:
+            return (
+                f"Performance is **{_pct(performance)}** for this shift window. "
+                f"Calculation: **{_kg(available_steam_kg)} steam during available time / {_kg(rated_steam_kg)} rated steam** "
+                f"during available time, using **{OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr** as the rated basis."
+            )
+        return f"Performance is **{_pct(performance)}** for this shift window."
 
     if ("quality" in q or "good steam" in q or "defective steam" in q or "bad steam" in q) and "oee" not in q:
+        if show_working:
+            return (
+                f"Quality is **{_pct(quality)}** for this shift window. "
+                f"Calculation: **{_kg(good_steam_kg)} good steam / {_kg(actual_steam_kg)} total steam**. "
+                f"Estimated out-of-spec steam is **{_kg(bad_steam_kg)}**. "
+                "Good steam requires pressure, temperature, drum level, flame, safety valve, and mode to be inside the BOILER-01 limits."
+            )
+        return f"Quality is **{_pct(quality)}** for this shift window."
+
+    if not show_working:
         return (
-            f"Quality is **{_pct(quality)}** for this shift window. "
-            f"Calculation: **{_kg(good_steam_kg)} good steam / {_kg(actual_steam_kg)} total steam**. "
-            f"Estimated out-of-spec steam is **{_kg(bad_steam_kg)}**. "
-            "Good steam requires pressure, temperature, drum level, flame, safety valve, and mode to be inside the BOILER-01 limits."
+            f"Current shift OEE is **{_pct(overall)}**. "
+            f"Availability is **{_pct(availability)}**, performance is **{_pct(performance)}**, "
+            f"and quality is **{_pct(quality)}**."
         )
 
     return (
@@ -866,6 +987,398 @@ def call_llm(messages, json_mode=False, max_tokens=800, think=None):
             return None
 
     return None
+
+
+# ============================================================
+# WHAT-IF RESPONSE NORMALIZATION
+# ============================================================
+# Small local models frequently ignore the requested what-if JSON schema and
+# emit their own key names (consequence_chain, operator_action_recommendation,
+# scenario-as-object, ...) or wrap the JSON in ```fences```. The dashboard
+# WhatIfCard only renders {scenario, risk_level, summary, steps[], operator_actions[]},
+# so without coercion the card renders blank or the raw JSON is dumped to the
+# operator. These helpers salvage whatever the model returned.
+
+def _stringify_json_value(val):
+    """Flatten any scalar/dict/list into a compact, human-readable string."""
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, bool):
+        return "yes" if val else "no"
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, dict):
+        return "; ".join(
+            f"{str(k).replace('_', ' ')}: {_stringify_json_value(v)}"
+            for k, v in val.items()
+        )
+    if isinstance(val, (list, tuple)):
+        return "; ".join(_stringify_json_value(v) for v in val)
+    return str(val)
+
+
+def _coerce_json_object(text):
+    """
+    Parse model JSON that may be wrapped in ```fences``` or padded with prose.
+    Returns the parsed object, or None if nothing parseable is found.
+    """
+    if not text:
+        return None
+    t = text.strip()
+    # Strip a leading/trailing markdown code fence (```json ... ```)
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z0-9]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t).strip()
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        pass
+    # Fall back to the outermost {...} block embedded in surrounding prose.
+    start = t.find("{")
+    end = t.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(t[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def normalize_what_if(sim):
+    """
+    Coerce arbitrary LLM JSON into the WhatIfCard schema the dashboard renders:
+    {scenario, risk_level, summary, steps:[{step,event,consequence}], operator_actions:[str]}.
+    Returns None if nothing salvageable is present (caller then sends a text answer).
+    """
+    if not isinstance(sim, dict):
+        return None
+
+    scenario = sim.get("scenario")
+    scenario = _stringify_json_value(scenario) if scenario else ""
+
+    # Steps — accept the common alternate key names small models drift to.
+    steps_raw = (sim.get("steps") or sim.get("consequence_chain")
+                 or sim.get("chain") or sim.get("consequences") or [])
+    steps = []
+    if isinstance(steps_raw, list):
+        for i, s in enumerate(steps_raw, 1):
+            if isinstance(s, dict):
+                event = (s.get("event") or s.get("stage") or s.get("title")
+                         or s.get("name") or "")
+                consequence = (s.get("consequence") or s.get("description")
+                               or s.get("effect") or s.get("detail") or "")
+                impact = s.get("impact_on_systems") or s.get("impact")
+                consequence = _stringify_json_value(consequence)
+                if impact:
+                    impact_txt = _stringify_json_value(impact)
+                    consequence = f"{consequence} ({impact_txt})" if consequence else impact_txt
+                steps.append({
+                    "step": s.get("step", i),
+                    "event": _stringify_json_value(event),
+                    "consequence": consequence,
+                })
+            else:
+                steps.append({"step": i, "event": _stringify_json_value(s), "consequence": ""})
+
+    # Operator actions — may arrive as a list, a string, or a recommendation dict.
+    actions_raw = (sim.get("operator_actions") or sim.get("operator_action_recommendation")
+                   or sim.get("recommended_actions") or sim.get("actions")
+                   or sim.get("recommendations") or [])
+    actions = []
+    if isinstance(actions_raw, str):
+        if actions_raw.strip():
+            actions = [actions_raw.strip()]
+    elif isinstance(actions_raw, dict):
+        primary = actions_raw.get("action") or actions_raw.get("recommendation")
+        if primary:
+            actions.append(_stringify_json_value(primary))
+        for k in ("monitoring_focus", "monitoring", "follow_up", "follow_ups"):
+            if actions_raw.get(k):
+                actions.append(f"Monitor: {_stringify_json_value(actions_raw[k])}")
+        if not actions:
+            actions = [_stringify_json_value(actions_raw)]
+    elif isinstance(actions_raw, list):
+        actions = [_stringify_json_value(a) for a in actions_raw if a]
+
+    # Summary — synthesize from a final-state block if the model omitted it.
+    summary = sim.get("summary") or sim.get("assessment") or sim.get("overall_assessment")
+    if not summary:
+        fss = sim.get("final_state_summary") or sim.get("final_state")
+        if fss:
+            summary = _stringify_json_value(fss)
+    summary = _stringify_json_value(summary) if summary else ""
+
+    # Risk level — normalise to the card's four buckets.
+    risk = _stringify_json_value(
+        sim.get("risk_level") or sim.get("risk") or sim.get("severity") or ""
+    ).lower().strip()
+    if risk not in ("low", "medium", "high", "critical"):
+        blob = json.dumps(sim).lower()
+        if "critical" in blob:
+            risk = "critical"
+        elif "high" in blob:
+            risk = "high"
+        elif "low" in blob:
+            risk = "low"
+        else:
+            risk = "medium"
+
+    if not steps and not summary and not actions:
+        return None  # nothing worth rendering as a card
+
+    return {
+        "scenario": scenario,
+        "risk_level": risk,
+        "summary": summary,
+        "steps": steps,
+        "operator_actions": actions,
+    }
+
+
+# ============================================================
+# SHIFT REPORT NARRATIVE (deterministic floor)
+# ============================================================
+# Reasoning models (qwen3.5, deepseek-r1, ...) are verbose and can overrun the
+# token budget or wrap the JSON, so the LLM narrative sometimes fails to parse.
+# This builds a genuine narrative straight from the hard shift statistics so the
+# operator always gets a reasoned report — never "narrative could not be
+# generated". The LLM narrative, when it parses, layers on top of this.
+
+def _shift_label(shift_start):
+    """Human name for a shift, e.g. 'Day (06:00-14:00)'."""
+    start_h = shift_start.hour
+    end_h = (start_h + SHIFT_LENGTH_HOURS) % 24
+    name = _SHIFT_NAMES.get(start_h, f"Shift {start_h:02d}00")
+    return f"{name} ({start_h:02d}:00-{end_h:02d}:00)"
+
+
+def current_shift_window(now=None):
+    """
+    Resolve the fixed clock-based shift that `now` falls in.
+    Returns (shift_start, shift_end, label) as tz-aware local datetimes.
+    Handles the night shift wrapping past midnight.
+    """
+    now = now or datetime.now().astimezone()
+    if not SHIFT_START_HOURS:
+        # Degenerate config — treat the whole day as one shift.
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, start + timedelta(days=1), "Full day (00:00-24:00)"
+
+    length = timedelta(hours=SHIFT_LENGTH_HOURS)
+    candidates = []
+    for day_offset in (-1, 0):
+        base = (now + timedelta(days=day_offset)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        for h in SHIFT_START_HOURS:
+            candidates.append(base + timedelta(hours=h))
+    # Current shift = the latest start that is at or before now.
+    shift_start = max(c for c in candidates if c <= now)
+    shift_end = shift_start + length
+    return shift_start, shift_end, _shift_label(shift_start)
+
+
+def compute_shift_stats_from_rows(rows, planned_seconds, alerts, anomaly_events):
+    """
+    Recompute the shift snapshot (uptime, OEE, efficiency, modes) from historian
+    telemetry rows over the shift window. Mirrors ShiftStats.record_reading /
+    snapshot, but derives dt from consecutive row timestamps and uses the full
+    elapsed shift time as the OEE 'planned' base — so telemetry gaps correctly
+    read as unavailable time. Output is byte-compatible with ShiftStats.snapshot().
+    """
+    samples = 0
+    flame_off = 0
+    avail_s = 0.0
+    actual_kg = avail_kg = rated_kg = good_kg = 0.0
+    eff_start = eff_end = eff_min = eff_max = None
+    modes = set()
+    prev_t = None
+
+    for r in rows:
+        tags = r.get("tags", {})
+        t = r["ts_epoch"]
+        mode = r.get("mode") or "NORMAL"
+        flame_on = bool(tags.get("flame_status", 1))
+        safety_closed = not bool(tags.get("safety_valve", 0))
+        available = flame_on and mode != "FAULT"
+        good_steam = (
+            available
+            and safety_closed
+            and OEE_MIN_PRESSURE_BAR <= _as_float(tags.get("steam_pressure"), -999.0) <= OEE_MAX_PRESSURE_BAR
+            and OEE_MIN_STEAM_TEMP_C <= _as_float(tags.get("steam_temperature"), -999.0) <= OEE_MAX_STEAM_TEMP_C
+            and OEE_MIN_DRUM_LEVEL_MM <= _as_float(tags.get("drum_level"), -999.0) <= OEE_MAX_DRUM_LEVEL_MM
+        )
+
+        dt = 1.0 if prev_t is None else max(0.0, min(t - prev_t, 5.0))
+        prev_t = t
+
+        samples += 1
+        if not flame_on:
+            flame_off += 1
+        modes.add(mode)
+        steam_flow = max(0.0, _as_float(tags.get("steam_flow"), 0.0))
+        steam_kg = steam_flow * dt / 3600.0
+        actual_kg += steam_kg
+        if available:
+            avail_s += dt
+            avail_kg += steam_kg
+            rated_kg += OEE_RATED_STEAM_FLOW_KGHR * dt / 3600.0
+        if good_steam:
+            good_kg += steam_kg
+        eff = tags.get("efficiency")
+        if eff is not None:
+            if eff_start is None:
+                eff_start = eff
+            eff_end = eff
+            eff_min = eff if eff_min is None else min(eff_min, eff)
+            eff_max = eff if eff_max is None else max(eff_max, eff)
+
+    planned = max(planned_seconds, 0.0)
+    uptime_pct = 100.0 if samples == 0 else 100.0 * (1 - flame_off / samples)
+    availability = avail_s / planned if planned > 0 else 0.0
+    performance = avail_kg / rated_kg if rated_kg > 0 else 0.0
+    quality = good_kg / actual_kg if actual_kg > 0 else 0.0
+    availability = max(0.0, min(availability, 1.0))
+    performance = max(0.0, min(performance, 1.5))
+    quality = max(0.0, min(quality, 1.0))
+    hours, rem = divmod(int(planned), 3600)
+    minutes = rem // 60
+
+    return {
+        "shift_duration": f"{hours}h {minutes:02d}m",
+        "uptime_pct": round(uptime_pct, 1),
+        "oee_samples": samples,
+        "oee": {
+            "availability": round(availability, 4),
+            "performance": round(performance, 4),
+            "quality": round(quality, 4),
+            "oee": round(availability * performance * quality, 4),
+            "planned_seconds": round(planned, 1),
+            "available_seconds": round(avail_s, 1),
+            "actual_steam_kg": round(actual_kg, 2),
+            "available_steam_kg": round(avail_kg, 2),
+            "rated_steam_kg": round(rated_kg, 2),
+            "good_steam_kg": round(good_kg, 2),
+            "rated_steam_flow_kg_hr": OEE_RATED_STEAM_FLOW_KGHR,
+            "good_steam_limits": {
+                "pressure_bar": [OEE_MIN_PRESSURE_BAR, OEE_MAX_PRESSURE_BAR],
+                "steam_temp_c": [OEE_MIN_STEAM_TEMP_C, OEE_MAX_STEAM_TEMP_C],
+                "drum_level_mm": [OEE_MIN_DRUM_LEVEL_MM, OEE_MAX_DRUM_LEVEL_MM],
+            },
+        },
+        "anomaly_events": anomaly_events,
+        "alerts": dict(alerts),
+        "efficiency": {"start": eff_start, "end": eff_end, "min": eff_min, "max": eff_max},
+        "modes_seen": sorted(modes),
+    }
+
+
+def build_shift_narrative(stats):
+    """Reason an end-of-shift narrative directly from the computed stats dict."""
+    duration = stats.get("shift_duration", "the shift")
+    uptime = _as_float(stats.get("uptime_pct"), 0.0)
+    anomalies = int(_as_float(stats.get("anomaly_events"), 0))
+    alerts = stats.get("alerts", {}) or {}
+    crit = int(_as_float(alerts.get("CRITICAL"), 0))
+    high = int(_as_float(alerts.get("HIGH"), 0))
+    warn = int(_as_float(alerts.get("WARNING"), 0))
+    low = int(_as_float(alerts.get("LOW"), 0))
+    total_alerts = crit + high + warn + low
+
+    eff = stats.get("efficiency", {}) or {}
+    eff_start = eff.get("start")
+    eff_end = eff.get("end")
+    eff_min = eff.get("min")
+    eff_delta = None
+    if isinstance(eff_start, (int, float)) and isinstance(eff_end, (int, float)):
+        eff_delta = eff_end - eff_start
+
+    modes = stats.get("modes_seen", []) or []
+    oee = stats.get("oee", {}) or {}
+    oee_pct = _as_float(oee.get("oee"), 0.0) * 100.0
+
+    # ── Overall status: worst-signal-wins ──────────────────────────────────
+    if crit > 0 or uptime < 90.0 or (eff_delta is not None and eff_delta < -3.0):
+        status = "poor"
+    elif (
+        anomalies == 0 and high == 0 and uptime >= 99.0
+        and (eff_delta is None or eff_delta >= -1.0)
+    ):
+        status = "good"
+    else:
+        status = "fair"
+
+    # ── Summary ────────────────────────────────────────────────────────────
+    eff_clause = ""
+    if eff_end is not None:
+        if eff_delta is not None:
+            eff_clause = f" Efficiency ended at {eff_end:.1f}% ({eff_delta:+.1f}% vs shift start)."
+        else:
+            eff_clause = f" Efficiency ended at {eff_end:.1f}%."
+    label = stats.get("shift_label")
+    lead = (
+        f"{label} - {duration} elapsed. BOILER-01 held {uptime:.1f}% flame uptime"
+        if label
+        else f"Over {duration}, BOILER-01 held {uptime:.1f}% flame uptime"
+    )
+    summary = (
+        f"{lead} with "
+        f"{anomalies} anomaly event{'s' if anomalies != 1 else ''} and "
+        f"{total_alerts} alert{'s' if total_alerts != 1 else ''} logged.{eff_clause} "
+        f"Overall shift status is {status.upper()}."
+    )
+
+    # ── Highlights ─────────────────────────────────────────────────────────
+    highlights = [f"Flame uptime {uptime:.1f}% across {duration}."]
+    if oee.get("oee") is not None:
+        highlights.append(
+            f"Shift OEE {oee_pct:.1f}% "
+            f"(A {_as_float(oee.get('availability'),0)*100:.0f}% x "
+            f"P {_as_float(oee.get('performance'),0)*100:.0f}% x "
+            f"Q {_as_float(oee.get('quality'),0)*100:.0f}%)."
+        )
+    if total_alerts:
+        parts = []
+        if crit: parts.append(f"{crit} critical")
+        if high: parts.append(f"{high} high")
+        if warn: parts.append(f"{warn} warning")
+        if low: parts.append(f"{low} low")
+        highlights.append(f"Alerts: {', '.join(parts)}.")
+    else:
+        highlights.append("No alerts fired this shift.")
+    if anomalies:
+        highlights.append(f"{anomalies} anomaly event(s) flagged by the AI monitor.")
+    if eff_delta is not None and abs(eff_delta) >= 0.1:
+        trend = "declined" if eff_delta < 0 else "improved"
+        lo = f", low {eff_min:.1f}%" if isinstance(eff_min, (int, float)) else ""
+        highlights.append(f"Efficiency {trend} {abs(eff_delta):.1f} pts{lo}.")
+    if modes:
+        highlights.append(f"Operating modes seen: {', '.join(str(m) for m in modes)}.")
+
+    # ── Follow-ups ─────────────────────────────────────────────────────────
+    follow_ups = []
+    if crit:
+        follow_ups.append("Review the critical alerts before the next shift start-up.")
+    if high or warn:
+        follow_ups.append("Investigate repeated high/warning alerts for a developing fault.")
+    if eff_delta is not None and eff_delta <= -1.0:
+        follow_ups.append("Check flue-gas temperature and O2 trim for the efficiency drop.")
+    if "FAULT" in [str(m).upper() for m in modes]:
+        follow_ups.append("Confirm the boiler fully recovered from the FAULT excursion.")
+    if not follow_ups:
+        follow_ups.append("No corrective action required; continue routine monitoring.")
+        follow_ups.append("Verify feedwater and combustion setpoints at next shift handover.")
+
+    return {
+        "summary": summary,
+        "overall_status": status,
+        "highlights": highlights[:5],
+        "follow_ups": follow_ups[:4],
+    }
+
+
 # ============================================================
 # AI ANALYST SERVICE
 # ============================================================
@@ -1299,6 +1812,61 @@ class AIAnalyst:
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
 
     # --------------------------------------------------------
+    # INTENT ROUTER  (LLM-as-classifier — replaces brittle keyword lists)
+    # --------------------------------------------------------
+    # When the operator names a sensor, decide what they actually want. This is
+    # the same LLM-classifier pattern as the domain guardrail below, so no extra
+    # framework (CrewAI/LangGraph/etc.) is needed — the local Ollama model does it.
+    # It generalises past hardcoded words: "why", "what's driving it", "is that a
+    # problem", "break it down" all resolve to REASON without a keyword list.
+    _INTENT_ROUTER_PROMPT = (
+        "You route an operator's question about a single boiler sensor to one "
+        "handler. Reply with EXACTLY one word: VALUE, HISTORY, or REASON.\n\n"
+        "VALUE   = wants the current live reading and/or whether it is normal "
+        "right now. e.g. 'what is the drum level', 'drum level now', "
+        "'is the drum level ok', 'current steam pressure and is it fine'.\n"
+        "HISTORY = wants a past value, trend, average, min/max, or comparison "
+        "over time. e.g. 'drum level yesterday', 'average O2 last shift', "
+        "'highest flue gas temp this week'.\n"
+        "REASON  = wants an explanation, cause, diagnosis, recommendation, "
+        "prediction, or what-if. ANY phrasing that asks to understand or act on "
+        "the value, not just read it. e.g. 'why is the drum level low', "
+        "'what's driving the drum level', 'is that a problem and what do I do', "
+        "'explain the drum level', 'what happens if it keeps dropping'. "
+        "Questions about PID, controller stability, loop hunting, tuning, "
+        "windup, setpoint tracking, saturation, overshoot, or whether a control "
+        "loop is stable are always REASON, even if they mention a sensor value "
+        "like O2 or pressure.\n\n"
+        "Reply with one word only: VALUE, HISTORY, or REASON."
+    )
+
+    def _route_sensor_question(self, question: str):
+        """
+        LLM intent router: for a question that names a sensor, return
+        'VALUE' | 'HISTORY' | 'REASON', or None if the router LLM is unreachable
+        (caller then falls back to the keyword heuristic). Robust to phrasing —
+        no hardcoded 'why/reason/cause' list to keep in sync.
+        """
+        messages = [
+            {"role": "system", "content": self._INTENT_ROUTER_PROMPT},
+            {"role": "user", "content": question},
+        ]
+        try:
+            # think=False + tiny budget -> fast, clean one-word answer on CPU.
+            result = call_llm(messages, json_mode=False, max_tokens=8, think=False)
+            if not result:
+                return None
+            cleaned = result.strip().upper()
+            for label in ("HISTORY", "REASON", "VALUE"):
+                if label in cleaned:
+                    print(f"[AI Analyst] Intent route: {label} <- {question[:60]}")
+                    return label
+            return None
+        except Exception as e:
+            print(f"[AI Analyst] Intent router error ({e}) — keyword fallback")
+            return None
+
+    # --------------------------------------------------------
     # DOMAIN GUARDRAIL  (Tier-2: LLM-as-classifier)
     # --------------------------------------------------------
     _CLASSIFIER_PROMPT = (
@@ -1381,12 +1949,28 @@ class AIAnalyst:
             return
 
         latest_samples = self.telemetry.get_recent_samples(last_n=1)
-        current_value_answer = build_current_value_answer(
-            question,
-            latest_samples[-1] if latest_samples else None,
-        )
+        latest_reading = latest_samples[-1] if latest_samples else None
+
+        # ── Intent routing (LLM-as-classifier, not keyword matching) ──────────
+        # Only serve the fast deterministic value read-out when the operator
+        # actually wants the VALUE. If they ask WHY / for a cause / diagnosis —
+        # in any phrasing — the router sends it (REASON/HISTORY) down to the LLM
+        # instead of returning the canned reading. Keyword heuristic is used only
+        # when the router LLM is unreachable, so a connectivity blip still works.
+        current_value_answer = None
+        tag = _find_requested_tag(question)
+        if tag:
+            route = "REASON" if _is_control_loop_question(question) else self._route_sensor_question(question)
+            if route == "VALUE":
+                current_value_answer = build_current_value_answer(
+                    question, latest_reading, force=True
+                )
+            elif route is None:
+                # Router LLM down — fall back to the keyword heuristic.
+                current_value_answer = build_current_value_answer(question, latest_reading)
+            # route in ("REASON", "HISTORY") -> leave None, fall through to LLM/historian
         if current_value_answer:
-            print(f"[AI Analyst] 📟 Deterministic value answer: {question[:70]}")
+            print(f"[AI Analyst] Deterministic value answer: {question[:70]}")
             self.chat_history.append({"role": "user", "content": question})
             self.chat_history.append({"role": "assistant", "content": current_value_answer})
             self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
@@ -1483,6 +2067,7 @@ class AIAnalyst:
 
         chat_context = "efficiency" if is_efficiency_q else "chat"
         physics_block = format_brief_for_llm(brief, context=chat_context)
+        control_loop_block = build_control_loop_context(question, samples, brief)
         print(f"[AI Analyst] 🧮 Deterministic context: {brief.hypothesis_label} [{brief.confidence}]")
         # ─────────────────────────────────────────────────────────────────
 
@@ -1505,6 +2090,7 @@ class AIAnalyst:
             "role": "user",
             "content": (
                 f"{physics_block}\n\n"
+                f"{control_loop_block}"
                 f"{safety_block}\n\n"
                 f"{historian_block}"
                 f"{manual_block}"
@@ -1589,8 +2175,11 @@ class AIAnalyst:
 
         response = call_llm(messages, json_mode=True, max_tokens=900)
         if response:
-            try:
-                sim = json.loads(response)
+            # The model often ignores the schema or wraps JSON in ```fences```.
+            # Coerce/normalize into the WhatIfCard schema so the dashboard can
+            # render a card instead of dumping raw JSON at the operator.
+            sim = normalize_what_if(_coerce_json_object(response))
+            if sim:
                 sim["type"] = "what_if"
                 sim["timestamp"] = time.time()
                 self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(sim), qos=1)
@@ -1601,11 +2190,14 @@ class AIAnalyst:
                     "content": f"[What-if simulation] {sim.get('summary', '')} "
                                f"Risk level: {sim.get('risk_level', '?')}."
                 })
-                print(f"[AI Analyst] ✅ What-if simulation published (risk: {sim.get('risk_level','?')})")
-            except json.JSONDecodeError:
-                print(f"[AI Analyst] ⚠ Non-JSON what-if response: {response[:100]}")
+                print(f"[AI Analyst] What-if simulation published (risk: {sim.get('risk_level','?')})")
+            else:
+                # Unparseable / unsalvageable — send readable text, never raw JSON.
+                raw = _coerce_json_object(response)
+                fallback_text = _stringify_json_value(raw) if raw is not None else response.strip()
+                print(f"[AI Analyst] What-if response did not match schema — text fallback")
                 self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
-                    "answer": response, "timestamp": time.time()
+                    "answer": fallback_text, "timestamp": time.time()
                 }), qos=1)
         else:
             self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
@@ -1615,12 +2207,47 @@ class AIAnalyst:
 
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
 
+    def _resolve_shift_stats(self):
+        """
+        Build the shift snapshot for the CURRENT fixed 8h clock shift.
+        Prefers the historian (true full-shift window, survives restarts); falls
+        back to the in-memory since-boot stats when no historian data is present.
+        Returns (stats, shift_start, shift_end, shift_label, data_source).
+        """
+        now_local = datetime.now().astimezone()
+        shift_start, shift_end, shift_label = current_shift_window(now_local)
+        window_end = min(now_local, shift_end)
+        planned_seconds = (window_end - shift_start).total_seconds()
+
+        if fetch_telemetry_window is not None and count_events_window is not None:
+            try:
+                rows = fetch_telemetry_window(shift_start, window_end)
+                if rows:
+                    events = count_events_window(shift_start, window_end)
+                    stats = compute_shift_stats_from_rows(
+                        rows, planned_seconds, events["alerts"], events["anomaly_episodes"]
+                    )
+                    print(f"[AI Analyst] Shift stats from historian: {len(rows)} samples "
+                          f"over {shift_label}")
+                    return stats, shift_start, shift_end, shift_label, "historian"
+            except Exception as e:
+                print(f"[AI Analyst] Historian shift query failed ({e}) — using in-memory stats")
+
+        # Fallback: in-memory accumulators since the analyst started.
+        stats = self.stats.snapshot()
+        print(f"[AI Analyst] Shift stats from in-memory (analyst uptime) for {shift_label}")
+        return stats, shift_start, shift_end, shift_label, "in_memory"
+
     def handle_shift_report(self):
-        """Generate an end-of-shift summary report (roadmap feature 3)."""
-        print("[AI Analyst] 📋 Shift report requested. Generating...")
+        """Generate an end-of-shift summary report for the current 8h shift."""
+        print("[AI Analyst] Shift report requested. Generating...")
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
 
-        stats = self.stats.snapshot()
+        stats, shift_start, shift_end, shift_label, data_source = self._resolve_shift_stats()
+        stats["shift_label"] = shift_label
+        stats["shift_start"] = shift_start.isoformat()
+        stats["shift_end"] = shift_end.isoformat()
+        stats["data_source"] = data_source
         latest = self.telemetry.get_latest_summary()
         trend = self.telemetry.get_context(last_n=60)
 
@@ -1629,8 +2256,9 @@ class AIAnalyst:
                 "role": "system",
                 "content": (
                     "You are a boiler operations supervisor AI for NEXUS OS writing an end-of-shift report for BOILER-01. "
+                    "The report covers ONE fixed 8-hour operating shift (the shift_label/window in the statistics), not the whole day. "
                     "You are given hard shift statistics (computed locally — treat them as ground truth) plus current "
-                    "readings and a recent trend window. Return strict JSON with these fields: "
+                    "readings and a recent trend window. Reference the shift by its label. Return strict JSON with these fields: "
                     "\"summary\" (string, 1-2 sentence narrative of the shift), "
                     "\"overall_status\" (string: good/fair/poor), "
                     "\"highlights\" (array of 3-5 short strings: notable events, trends, or confirmations of stability), "
@@ -1641,6 +2269,7 @@ class AIAnalyst:
             {
                 "role": "user",
                 "content": (
+                    f"SHIFT: {shift_label} (source: {data_source})\n\n"
                     f"SHIFT STATISTICS:\n{json.dumps(stats, indent=2)}\n\n"
                     f"CURRENT READINGS:\n{latest}\n\n"
                     f"RECENT TREND (last 60 seconds):\n{trend}\n\n"
@@ -1649,25 +2278,36 @@ class AIAnalyst:
             }
         ]
 
-        response = call_llm(messages, json_mode=True, max_tokens=600)
+        # Reasoning models (qwen3.5 is the current default) are verbose, so give
+        # the JSON enough room to finish — a 600-token cap truncated it mid-object
+        # and the narrative failed to parse. think=False keeps reasoning out of the
+        # token budget so the whole allowance goes to the JSON answer.
+        response = call_llm(messages, json_mode=True, max_tokens=1200, think=False)
         report = dict(stats)
         report["type"] = "shift_report"
         report["timestamp"] = time.time()
 
-        if response:
-            try:
-                llm_fields = json.loads(response)
-                for key in ("summary", "overall_status", "highlights", "follow_ups"):
-                    if key in llm_fields:
-                        report[key] = llm_fields[key]
-            except json.JSONDecodeError:
-                print(f"[AI Analyst] ⚠ Non-JSON shift report from AI: {response[:100]}")
-                report["summary"] = "Shift statistics compiled, but the AI narrative could not be generated."
+        # Deterministic narrative reasoned straight from the stats — always valid.
+        # The LLM narrative layers on top of it when (and only when) it parses.
+        narrative = build_shift_narrative(stats)
+
+        llm_fields = _coerce_json_object(response) if response else None
+        if isinstance(llm_fields, dict):
+            for key in ("summary", "overall_status", "highlights", "follow_ups"):
+                val = llm_fields.get(key)
+                if val:  # only override when the model actually produced content
+                    narrative[key] = val
+            print("[AI Analyst] Shift report narrative parsed from LLM")
+        elif response is None:
+            print("[AI Analyst] LLM unreachable — deterministic shift narrative used")
         else:
-            report["summary"] = "Shift statistics compiled, but the AI service was unreachable for the narrative."
+            print(f"[AI Analyst] Non-JSON shift report — deterministic narrative used: {str(response)[:80]}")
+
+        for key in ("summary", "overall_status", "highlights", "follow_ups"):
+            report[key] = narrative[key]
 
         self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(report), qos=1)
-        print("[AI Analyst] ✅ Shift report published")
+        print("[AI Analyst] Shift report published")
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
 
     def run(self):
