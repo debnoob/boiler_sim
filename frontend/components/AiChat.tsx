@@ -290,7 +290,7 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
             {[
               ['Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
               ['Efficiency', 'Why is efficiency trending the way it is? Explain using current sensor values.'],
-              ['OEE', 'Calculate current shift OEE and show availability, performance, and quality factors.'],
+              ['OEE', 'Calculate current shift OEE and show availability, thermal performance, and quality factors.'],
               ['Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
               ['What-if: drum', 'What if drum level drops to 180mm?'],
               ['Maintenance priorities', 'What should the maintenance team prioritize this week, in order?'],

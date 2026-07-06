@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Box, LayoutDashboard, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
+import { Box, LayoutDashboard, Gauge, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
 import { ChatWidget } from './ChatWidget';
 import { useNexusStore } from '@/lib/store';
 // import { exportToPowerBI } from '@/lib/exportToPowerBI';
 
 const NAV = [
   { href: '/',           label: 'Overview',                icon: LayoutDashboard },
+  { href: '/operations', label: 'Operations',              icon: Gauge },
   { href: '/predictive', label: 'Predictive Intelligence', icon: TrendingUp },
   { href: '/incidents',  label: 'Incidents & Alarms',      icon: AlertTriangle },
   { href: '/controls',   label: 'Controls',                icon: Sliders },
@@ -18,6 +19,7 @@ const NAV = [
 
 const PAGE_TITLES: Record<string, string> = {
   '/':           'Overview',
+  '/operations': 'Operations',
   '/predictive': 'Predictive Intelligence',
   '/incidents':  'Incidents & Alarms',
   '/controls':   'Controls',

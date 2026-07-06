@@ -2,10 +2,11 @@
 
 import { useEffect, useRef } from 'react';
 import { useNexusStore } from '@/lib/store';
-import type { HeartbeatPayload, AnomalyPayload, AlertPayload, DiagnosisPayload, AiResponsePayload, AlertEvent, MoiraiForecastPayload, ControlActionPayload } from '@/types/telemetry';
+import type { HeartbeatPayload, AnomalyPayload, AlertPayload, DiagnosisPayload, AiResponsePayload, AlertEvent, MoiraiForecastPayload, ControlActionPayload, OeeSnapshotPayload, OeeHistoryPayload } from '@/types/telemetry';
 
 const MQTT_URL = process.env.NEXT_PUBLIC_MQTT_URL || 'ws://localhost:9001';
 const TOPIC = 'factory/pumphouse4/boiler/#';
+const TOPIC_OEE_REQUEST = 'factory/pumphouse4/boiler/unit01/kpi/oee/request';
 const ALERT_THROTTLE_MS = 3000;
 
 export function useMqtt() {
@@ -39,6 +40,9 @@ export function useMqtt() {
         client.subscribe(TOPIC, (err) => {
           if (!err) store.addStream('✓ Subscribed to factory/pumphouse4/boiler/#', 'emerald');
         });
+        // Ask the AI analyst for historical shift OEE so the Operations board has
+        // previous shifts to compare against, not just the live current shift.
+        client.publish(TOPIC_OEE_REQUEST, JSON.stringify({ limit: 7 }), { qos: 1 });
       });
 
       client.on('error', (err) => {
@@ -111,6 +115,10 @@ export function useMqtt() {
           } else if (topic.endsWith('/ai/forecast')) {
             const msg = JSON.parse(raw) as MoiraiForecastPayload;
             store.setMoiraiForecast(msg);
+          } else if (topic.endsWith('/kpi/oee/history')) {
+            store.setOeeHistory(JSON.parse(raw) as OeeHistoryPayload);
+          } else if (topic.endsWith('/kpi/oee')) {
+            store.setOeeSnapshot(JSON.parse(raw) as OeeSnapshotPayload);
           }
         } catch (e) {
           console.error('[useMqtt] parse error on', topic, e);

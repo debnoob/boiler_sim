@@ -46,7 +46,29 @@
       "Bash(pip3 show *)",
       "Bash(python3 -m py_compile engine/ai_analyst.py)",
       "Bash(python3 -m py_compile historian_client.py)",
-      "Bash(python3 -m py_compile ai_analyst.py historian_client.py)"
+      "Bash(python3 -m py_compile ai_analyst.py historian_client.py)",
+      "Bash(python3 -c \"import paho.mqtt.client, dotenv, requests\")",
+      "Bash(mkdir -p /private/tmp/claude-501/-Users-jethwakeval-Downloads-nexus-os-demo/7d105738-47b5-4beb-9604-eddd02200b33/scratchpad/stubs/paho/mqtt)",
+      "Bash(printf '')",
+      "Bash(printf 'class Client:\\\\n    def __init__\\(self,*a,**k\\):pass\\\\n')",
+      "Bash(printf 'def load_dotenv\\(*a,**k\\):return False\\\\n')",
+      "Bash(printf 'class exceptions:\\\\n    class Timeout\\(Exception\\):pass\\\\ndef post\\(*a,**k\\):raise Exception\\(\"stub\"\\)\\\\n')",
+      "Bash(node -e \"const l=require\\('lucide-react'\\); console.log\\('Gauge:', !!l.Gauge, 'Activity:', !!l.Activity, 'CircleGauge:', !!l.CircleGauge\\)\")",
+      "Bash(npx eslint *)",
+      "Bash(lsof -iTCP -sTCP:LISTEN -P)",
+      "Bash(timeout 8 mosquitto_sub -h localhost -p 1883 -t 'factory/pumphouse4/boiler/unit01/kpi/#' -v)",
+      "Bash(echo \"=== EXIT $? ===\")",
+      "Bash(timeout 6 mosquitto_sub -h localhost -p 1883 -t 'factory/pumphouse4/boiler/unit01/system/heartbeat' -t 'factory/pumphouse4/boiler/unit01/kpi/oee' -t 'factory/pumphouse4/boiler/unit01/kpi/oee/history' -v)",
+      "Bash(ps -o pid,command -ww -p 28496)",
+      "Skill(dataviz)",
+      "Skill(dataviz:*)",
+      "Bash(node scripts/validate_palette.js \"#38bdf8,#06b6d4,#a78bfa\" --mode dark)",
+      "Bash(node scripts/validate_palette.js \"#3987e5,#22b8cf,#9085e9\" --mode dark --surface \"#17202b\")",
+      "Bash(node scripts/validate_palette.js \"#3987e5,#199e70,#9085e9\" --mode dark --surface \"#17202b\")",
+      "Bash(node scripts/validate_palette.js \"#2a78d6,#0e9bb0,#4a3aa7\" --mode light --surface \"#edf4f8\")",
+      "Bash(node scripts/validate_palette.js \"#3987e5,#1298ad,#9085e9\" --mode dark --surface \"#17202b\")",
+      "Bash(node scripts/validate_palette.js \"#2a78d6,#0b7f91,#4a3aa7\" --mode light --surface \"#edf4f8\")",
+      "Bash(node scripts/validate_palette.js \"#2a78d6,#0e93a8,#4a3aa7\" --mode light --surface \"#edf4f8\")"
     ]
   }
 }

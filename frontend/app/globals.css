@@ -1403,6 +1403,67 @@ body.light .tag-row:hover .tag-label { color: var(--accent-text) !important; }
 }
 
 /* ============================================================
+   OPERATIONS BOARD — polish (eyebrows, skeletons, hero)
+   ============================================================ */
+.ops-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--tx-muted);
+  margin: 6px 2px 0;
+}
+.ops-eyebrow::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--bd-card), transparent);
+}
+
+@keyframes ops-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bd-inner) 37%, var(--bg-elevated) 63%);
+  background-size: 200% 100%;
+  animation: ops-shimmer 1.5s ease-in-out infinite;
+}
+
+/* Factor card with a hue stripe down the left edge */
+.factor-card {
+  position: relative;
+  overflow: hidden;
+  padding-left: 15px;
+}
+.factor-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--factor-hue, var(--accent));
+  border-radius: 4px 0 0 4px;
+}
+
+.ops-delta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+}
+
+/* ============================================================
    APP SHELL — sidebar + topbar + main content
    ============================================================ */
 html, body { height: 100%; }

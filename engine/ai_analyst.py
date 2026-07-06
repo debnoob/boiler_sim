@@ -40,6 +40,7 @@ try:
         build_historian_context,
         fetch_telemetry_window,
         count_events_window,
+        _parse_explicit_date as historian_parse_explicit_date,
     )
 except Exception:
     answer_historical_metric_question = None
@@ -47,6 +48,7 @@ except Exception:
     build_historian_context = None
     fetch_telemetry_window = None
     count_events_window = None
+    historian_parse_explicit_date = None
 
 # ============================================================
 # MANUAL KNOWLEDGE (in-prompt, keyword-routed — no vector DB)
@@ -116,6 +118,9 @@ TOPIC_CHAT_IN = "factory/pumphouse4/boiler/unit01/ai/question"
 TOPIC_CHAT_OUT = "factory/pumphouse4/boiler/unit01/ai/response"
 TOPIC_DIAGNOSIS = "factory/pumphouse4/boiler/unit01/ai/diagnosis"
 TOPIC_AI_STATUS = "factory/pumphouse4/boiler/unit01/ai/status"
+TOPIC_OEE = "factory/pumphouse4/boiler/unit01/kpi/oee"
+TOPIC_OEE_REQUEST = "factory/pumphouse4/boiler/unit01/kpi/oee/request"
+TOPIC_OEE_HISTORY = "factory/pumphouse4/boiler/unit01/kpi/oee/history"
 
 # Closed-loop autonomous control
 TOPIC_CONTROL_CMD    = "factory/pumphouse4/boiler/control/setpoint"      # AI → engine command bus
@@ -180,6 +185,7 @@ THRESHOLDS = {
 }
 
 OEE_RATED_STEAM_FLOW_KGHR = 2300.0
+OEE_RATED_EFFICIENCY_PCT = BASELINES["efficiency"]
 OEE_MIN_PRESSURE_BAR = 9.0
 OEE_MAX_PRESSURE_BAR = 12.0
 OEE_MIN_STEAM_TEMP_C = 170.0
@@ -550,6 +556,10 @@ def _kg(value):
     return f"{value:.1f} kg"
 
 
+def _clamp(value, lo=0.0, hi=1.0):
+    return max(lo, min(hi, value))
+
+
 def _wants_oee_working(question):
     q = question.lower()
     detail_terms = (
@@ -562,16 +572,17 @@ def _wants_oee_working(question):
 
 def _format_oee_formula(snapshot):
     return (
-        "OEE for this boiler should be calculated as:\n"
+        "OEE for this boiler is calculated as a boiler energy-effectiveness score:\n"
         "- Availability = available boiler time / planned boiler time\n"
-        "- Performance = actual steam mass / rated steam mass during available time\n"
-        "- Quality = good steam mass / total steam mass\n"
+        f"- Performance = average thermal efficiency / rated efficiency ({OEE_RATED_EFFICIENCY_PCT:.1f}%)\n"
+        "- Quality = good steam mass / available steam mass\n"
         "- OEE = Availability x Performance x Quality\n\n"
         "For BOILER-01, good steam means flame proven, no safety-valve lift, not in FAULT mode, "
         f"pressure {OEE_MIN_PRESSURE_BAR:.1f}-{OEE_MAX_PRESSURE_BAR:.1f} bar, "
         f"steam temperature {OEE_MIN_STEAM_TEMP_C:.0f}-{OEE_MAX_STEAM_TEMP_C:.0f} °C, and "
         f"drum level {OEE_MIN_DRUM_LEVEL_MM:.0f}-{OEE_MAX_DRUM_LEVEL_MM:.0f} mm. "
-        f"The current rated steam basis is {OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr."
+        f"Steam throughput versus {OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr is tracked as load utilization, "
+        "but it is not used as the performance factor."
     )
 
 
@@ -595,7 +606,10 @@ def build_oee_answer(question, stats_snapshot):
     available_steam_kg = oee.get("available_steam_kg", actual_steam_kg)
     rated_steam_kg = oee.get("rated_steam_kg", 0.0)
     good_steam_kg = oee.get("good_steam_kg", 0.0)
-    bad_steam_kg = max(0.0, actual_steam_kg - good_steam_kg)
+    bad_steam_kg = max(0.0, available_steam_kg - good_steam_kg)
+    avg_efficiency = oee.get("avg_efficiency_pct", 0.0)
+    rated_efficiency = oee.get("rated_efficiency_pct", OEE_RATED_EFFICIENCY_PCT)
+    load_utilization = oee.get("load_utilization", 0.0)
     show_working = _wants_oee_working(question)
 
     if show_working and ("formula" in q or "method" in q or "how" in q):
@@ -614,8 +628,8 @@ def build_oee_answer(question, stats_snapshot):
         if show_working:
             return (
                 f"Performance is **{_pct(performance)}** for this shift window. "
-                f"Calculation: **{_kg(available_steam_kg)} steam during available time / {_kg(rated_steam_kg)} rated steam** "
-                f"during available time, using **{OEE_RATED_STEAM_FLOW_KGHR:.0f} kg/hr** as the rated basis."
+                f"Calculation: **{avg_efficiency:.2f}% average thermal efficiency / {rated_efficiency:.1f}% rated efficiency**. "
+                f"Steam load utilization is **{_pct(load_utilization)}**, tracked separately from OEE performance."
             )
         return f"Performance is **{_pct(performance)}** for this shift window."
 
@@ -623,7 +637,7 @@ def build_oee_answer(question, stats_snapshot):
         if show_working:
             return (
                 f"Quality is **{_pct(quality)}** for this shift window. "
-                f"Calculation: **{_kg(good_steam_kg)} good steam / {_kg(actual_steam_kg)} total steam**. "
+                f"Calculation: **{_kg(good_steam_kg)} good steam / {_kg(available_steam_kg)} available steam**. "
                 f"Estimated out-of-spec steam is **{_kg(bad_steam_kg)}**. "
                 "Good steam requires pressure, temperature, drum level, flame, safety valve, and mode to be inside the BOILER-01 limits."
             )
@@ -632,18 +646,18 @@ def build_oee_answer(question, stats_snapshot):
     if not show_working:
         return (
             f"Current shift OEE is **{_pct(overall)}**. "
-            f"Availability is **{_pct(availability)}**, performance is **{_pct(performance)}**, "
+            f"Availability is **{_pct(availability)}**, thermal performance is **{_pct(performance)}**, "
             f"and quality is **{_pct(quality)}**."
         )
 
     return (
         f"Current shift OEE is **{_pct(overall)}**.\n"
         f"- Availability: **{_pct(availability)}** = {available_seconds:.0f} s / {planned_seconds:.0f} s\n"
-        f"- Performance: **{_pct(performance)}** = {_kg(available_steam_kg)} / {_kg(rated_steam_kg)} at rated capacity\n"
-        f"- Quality: **{_pct(quality)}** = {_kg(good_steam_kg)} / {_kg(actual_steam_kg)}\n"
+        f"- Performance: **{_pct(performance)}** = {avg_efficiency:.2f}% average efficiency / {rated_efficiency:.1f}% rated efficiency\n"
+        f"- Quality: **{_pct(quality)}** = {_kg(good_steam_kg)} / {_kg(available_steam_kg)} available steam\n"
         f"- OEE: **{_pct(availability)} x {_pct(performance)} x {_pct(quality)} = {_pct(overall)}**\n\n"
-        "As a boiler metric, keep OEE separate from thermal efficiency: OEE tells whether the asset produced good steam on time, "
-        "while boiler efficiency tells how much fuel energy was converted into useful steam energy."
+        f"Steam load utilization is **{_pct(load_utilization)}** ({_kg(available_steam_kg)} / {_kg(rated_steam_kg)}), "
+        "tracked separately so low process demand does not look like poor boiler performance."
     )
 
 # ============================================================
@@ -735,6 +749,8 @@ class ShiftStats:
         self.oee_available_steam_kg = 0.0
         self.oee_rated_steam_kg = 0.0
         self.oee_good_steam_kg = 0.0
+        self.oee_efficiency_weighted_sum = 0.0
+        self.oee_efficiency_seconds = 0.0
         self.eff_start = None
         self.eff_end = None
         self.eff_min = None
@@ -775,6 +791,9 @@ class ShiftStats:
                 self.oee_available_seconds += dt
                 self.oee_available_steam_kg += steam_kg
                 self.oee_rated_steam_kg += OEE_RATED_STEAM_FLOW_KGHR * dt / 3600.0
+                if eff is not None:
+                    self.oee_efficiency_weighted_sum += _as_float(eff, OEE_RATED_EFFICIENCY_PCT) * dt
+                    self.oee_efficiency_seconds += dt
             if good_steam:
                 self.oee_good_steam_kg += steam_kg
             if eff is not None:
@@ -802,11 +821,17 @@ class ShiftStats:
             if self.samples > 0:
                 uptime_pct = 100.0 * (1 - self.flame_off_samples / self.samples)
             availability = self.oee_available_seconds / elapsed if elapsed > 0 else 0.0
-            performance = self.oee_available_steam_kg / self.oee_rated_steam_kg if self.oee_rated_steam_kg > 0 else 0.0
-            quality = self.oee_good_steam_kg / self.oee_actual_steam_kg if self.oee_actual_steam_kg > 0 else 0.0
-            availability = max(0.0, min(availability, 1.0))
-            performance = max(0.0, min(performance, 1.5))
-            quality = max(0.0, min(quality, 1.0))
+            avg_efficiency = (
+                self.oee_efficiency_weighted_sum / self.oee_efficiency_seconds
+                if self.oee_efficiency_seconds > 0 else 0.0
+            )
+            performance = avg_efficiency / OEE_RATED_EFFICIENCY_PCT if OEE_RATED_EFFICIENCY_PCT > 0 else 0.0
+            quality = self.oee_good_steam_kg / self.oee_available_steam_kg if self.oee_available_steam_kg > 0 else 0.0
+            load_utilization = self.oee_available_steam_kg / self.oee_rated_steam_kg if self.oee_rated_steam_kg > 0 else 0.0
+            availability = _clamp(availability)
+            performance = _clamp(performance)
+            quality = _clamp(quality)
+            load_utilization = _clamp(load_utilization, 0.0, 1.5)
             return {
                 "shift_duration": f"{hours}h {minutes:02d}m",
                 "uptime_pct": round(uptime_pct, 1),
@@ -818,6 +843,9 @@ class ShiftStats:
                     "oee": round(availability * performance * quality, 4),
                     "planned_seconds": round(elapsed, 1),
                     "available_seconds": round(self.oee_available_seconds, 1),
+                    "avg_efficiency_pct": round(avg_efficiency, 2),
+                    "rated_efficiency_pct": OEE_RATED_EFFICIENCY_PCT,
+                    "load_utilization": round(load_utilization, 4),
                     "actual_steam_kg": round(self.oee_actual_steam_kg, 2),
                     "available_steam_kg": round(self.oee_available_steam_kg, 2),
                     "rated_steam_kg": round(self.oee_rated_steam_kg, 2),
@@ -1229,6 +1257,8 @@ def compute_shift_stats_from_rows(rows, planned_seconds, alerts, anomaly_events)
     flame_off = 0
     avail_s = 0.0
     actual_kg = avail_kg = rated_kg = good_kg = 0.0
+    efficiency_weighted_sum = 0.0
+    efficiency_seconds = 0.0
     eff_start = eff_end = eff_min = eff_max = None
     modes = set()
     prev_t = None
@@ -1262,6 +1292,9 @@ def compute_shift_stats_from_rows(rows, planned_seconds, alerts, anomaly_events)
             avail_s += dt
             avail_kg += steam_kg
             rated_kg += OEE_RATED_STEAM_FLOW_KGHR * dt / 3600.0
+            if tags.get("efficiency") is not None:
+                efficiency_weighted_sum += _as_float(tags.get("efficiency"), OEE_RATED_EFFICIENCY_PCT) * dt
+                efficiency_seconds += dt
         if good_steam:
             good_kg += steam_kg
         eff = tags.get("efficiency")
@@ -1275,11 +1308,14 @@ def compute_shift_stats_from_rows(rows, planned_seconds, alerts, anomaly_events)
     planned = max(planned_seconds, 0.0)
     uptime_pct = 100.0 if samples == 0 else 100.0 * (1 - flame_off / samples)
     availability = avail_s / planned if planned > 0 else 0.0
-    performance = avail_kg / rated_kg if rated_kg > 0 else 0.0
-    quality = good_kg / actual_kg if actual_kg > 0 else 0.0
-    availability = max(0.0, min(availability, 1.0))
-    performance = max(0.0, min(performance, 1.5))
-    quality = max(0.0, min(quality, 1.0))
+    avg_efficiency = efficiency_weighted_sum / efficiency_seconds if efficiency_seconds > 0 else 0.0
+    performance = avg_efficiency / OEE_RATED_EFFICIENCY_PCT if OEE_RATED_EFFICIENCY_PCT > 0 else 0.0
+    quality = good_kg / avail_kg if avail_kg > 0 else 0.0
+    load_utilization = avail_kg / rated_kg if rated_kg > 0 else 0.0
+    availability = _clamp(availability)
+    performance = _clamp(performance)
+    quality = _clamp(quality)
+    load_utilization = _clamp(load_utilization, 0.0, 1.5)
     hours, rem = divmod(int(planned), 3600)
     minutes = rem // 60
 
@@ -1294,6 +1330,9 @@ def compute_shift_stats_from_rows(rows, planned_seconds, alerts, anomaly_events)
             "oee": round(availability * performance * quality, 4),
             "planned_seconds": round(planned, 1),
             "available_seconds": round(avail_s, 1),
+            "avg_efficiency_pct": round(avg_efficiency, 2),
+            "rated_efficiency_pct": OEE_RATED_EFFICIENCY_PCT,
+            "load_utilization": round(load_utilization, 4),
             "actual_steam_kg": round(actual_kg, 2),
             "available_steam_kg": round(avail_kg, 2),
             "rated_steam_kg": round(rated_kg, 2),
@@ -1312,98 +1351,215 @@ def compute_shift_stats_from_rows(rows, planned_seconds, alerts, anomaly_events)
     }
 
 
-def build_shift_narrative(stats):
-    """Reason an end-of-shift narrative directly from the computed stats dict."""
-    duration = stats.get("shift_duration", "the shift")
-    uptime = _as_float(stats.get("uptime_pct"), 0.0)
-    anomalies = int(_as_float(stats.get("anomaly_events"), 0))
+def build_shift_facts(stats):
+    """
+    Canonical fact contract for shift reports.
+
+    Everything here is measured or deterministically computed. The LLM may
+    phrase these facts, but it must not recalculate or reinterpret them.
+    """
     alerts = stats.get("alerts", {}) or {}
-    crit = int(_as_float(alerts.get("CRITICAL"), 0))
-    high = int(_as_float(alerts.get("HIGH"), 0))
-    warn = int(_as_float(alerts.get("WARNING"), 0))
-    low = int(_as_float(alerts.get("LOW"), 0))
-    total_alerts = crit + high + warn + low
+    by_severity = {
+        "CRITICAL": int(_as_float(alerts.get("CRITICAL"), 0)),
+        "HIGH": int(_as_float(alerts.get("HIGH"), 0)),
+        "WARNING": int(_as_float(alerts.get("WARNING"), 0)),
+        "LOW": int(_as_float(alerts.get("LOW"), 0)),
+    }
+    total_alerts = sum(by_severity.values())
+    severe_alerts = by_severity["CRITICAL"] + by_severity["HIGH"] + by_severity["WARNING"]
 
     eff = stats.get("efficiency", {}) or {}
     eff_start = eff.get("start")
     eff_end = eff.get("end")
-    eff_min = eff.get("min")
     eff_delta = None
     if isinstance(eff_start, (int, float)) and isinstance(eff_end, (int, float)):
-        eff_delta = eff_end - eff_start
+        eff_delta = round(eff_end - eff_start, 2)
 
-    modes = stats.get("modes_seen", []) or []
     oee = stats.get("oee", {}) or {}
-    oee_pct = _as_float(oee.get("oee"), 0.0) * 100.0
+    availability_pct = round(_as_float(oee.get("availability"), 0.0) * 100.0, 2)
+    performance_pct = round(_as_float(oee.get("performance"), 0.0) * 100.0, 2)
+    quality_pct = round(_as_float(oee.get("quality"), 0.0) * 100.0, 2)
+    oee_pct = round(_as_float(oee.get("oee"), 0.0) * 100.0, 2)
 
-    # ── Overall status: worst-signal-wins ──────────────────────────────────
-    if crit > 0 or uptime < 90.0 or (eff_delta is not None and eff_delta < -3.0):
+    return {
+        "window": {
+            "label": stats.get("shift_label"),
+            "duration": stats.get("shift_duration"),
+            "start": stats.get("shift_start"),
+            "end": stats.get("shift_end"),
+            "source": stats.get("data_source"),
+        },
+        "uptime_pct": _as_float(stats.get("uptime_pct"), 0.0),
+        "anomaly_events": int(_as_float(stats.get("anomaly_events"), 0)),
+        "alerts": {
+            "total": total_alerts,
+            "severe_total": severe_alerts,
+            "by_severity": by_severity,
+            "by_tag": stats.get("alert_breakdown", {}) or stats.get("alerts_by_tag", {}) or {},
+        },
+        "efficiency": {
+            "start_pct": eff_start,
+            "end_pct": eff_end,
+            "delta_points": eff_delta,
+            "min_pct": eff.get("min"),
+            "max_pct": eff.get("max"),
+        },
+        "oee": {
+            "availability_pct": availability_pct,
+            "performance_pct": performance_pct,
+            "quality_pct": quality_pct,
+            "oee_pct": oee_pct,
+            "planned_seconds": oee.get("planned_seconds"),
+            "available_seconds": oee.get("available_seconds"),
+            "avg_efficiency_pct": oee.get("avg_efficiency_pct"),
+            "rated_efficiency_pct": oee.get("rated_efficiency_pct", OEE_RATED_EFFICIENCY_PCT),
+            "load_utilization_pct": round(_as_float(oee.get("load_utilization"), 0.0) * 100.0, 2),
+        },
+        "steam": {
+            "actual_steam_kg": oee.get("actual_steam_kg"),
+            "available_steam_kg": oee.get("available_steam_kg"),
+            "good_steam_kg": oee.get("good_steam_kg"),
+            "rated_steam_basis_kg": oee.get("rated_steam_kg"),
+            "rated_steam_flow_kg_hr": oee.get("rated_steam_flow_kg_hr"),
+            "good_steam_limits": oee.get("good_steam_limits", {}),
+        },
+        "modes_seen": stats.get("modes_seen", []) or [],
+    }
+
+
+def build_shift_interpretations(facts):
+    """Deterministic domain interpretation for shift reports."""
+    alerts = facts["alerts"]["by_severity"]
+    critical = alerts["CRITICAL"]
+    high = alerts["HIGH"]
+    warning = alerts["WARNING"]
+    severe_alerts = facts["alerts"]["severe_total"]
+    uptime = facts["uptime_pct"]
+    availability = facts["oee"]["availability_pct"]
+    performance = facts["oee"]["performance_pct"]
+    quality = facts["oee"]["quality_pct"]
+    eff_delta = facts["efficiency"]["delta_points"]
+
+    if critical > 0 or availability < 50.0 or performance < 85.0 or quality < 80.0:
         status = "poor"
-    elif (
-        anomalies == 0 and high == 0 and uptime >= 99.0
-        and (eff_delta is None or eff_delta >= -1.0)
-    ):
-        status = "good"
-    else:
+    elif high > 0 or warning > 0 or uptime < 99.0 or performance < 95.0 or (eff_delta is not None and eff_delta < -1.0):
         status = "fair"
+    else:
+        status = "good"
 
-    # ── Summary ────────────────────────────────────────────────────────────
-    eff_clause = ""
-    if eff_end is not None:
-        if eff_delta is not None:
-            eff_clause = f" Efficiency ended at {eff_end:.1f}% ({eff_delta:+.1f}% vs shift start)."
-        else:
-            eff_clause = f" Efficiency ended at {eff_end:.1f}%."
-    label = stats.get("shift_label")
-    lead = (
-        f"{label} - {duration} elapsed. BOILER-01 held {uptime:.1f}% flame uptime"
-        if label
-        else f"Over {duration}, BOILER-01 held {uptime:.1f}% flame uptime"
-    )
-    summary = (
-        f"{lead} with "
-        f"{anomalies} anomaly event{'s' if anomalies != 1 else ''} and "
-        f"{total_alerts} alert{'s' if total_alerts != 1 else ''} logged.{eff_clause} "
-        f"Overall shift status is {status.upper()}."
-    )
-
-    # ── Highlights ─────────────────────────────────────────────────────────
-    highlights = [f"Flame uptime {uptime:.1f}% across {duration}."]
-    if oee.get("oee") is not None:
-        highlights.append(
-            f"Shift OEE {oee_pct:.1f}% "
-            f"(A {_as_float(oee.get('availability'),0)*100:.0f}% x "
-            f"P {_as_float(oee.get('performance'),0)*100:.0f}% x "
-            f"Q {_as_float(oee.get('quality'),0)*100:.0f}%)."
-        )
-    if total_alerts:
+    interpretations = []
+    if severe_alerts:
         parts = []
-        if crit: parts.append(f"{crit} critical")
-        if high: parts.append(f"{high} high")
-        if warn: parts.append(f"{warn} warning")
-        if low: parts.append(f"{low} low")
-        highlights.append(f"Alerts: {', '.join(parts)}.")
+        if critical: parts.append(f"{critical} CRITICAL")
+        if high: parts.append(f"{high} HIGH")
+        if warning: parts.append(f"{warning} WARNING")
+        interpretations.append(
+            f"Alert severity is material: {', '.join(parts)} alert(s) were logged and require investigation."
+        )
+    else:
+        interpretations.append("No CRITICAL, HIGH, or WARNING alerts were logged.")
+
+    if uptime >= 99.0 and availability < 50.0:
+        interpretations.append(
+            f"Flame uptime ({uptime:.1f}%) and OEE availability ({availability:.2f}%) are different metrics; "
+            "do not describe the day as operationally perfect when OEE availability is low."
+        )
+    if quality < 80.0:
+        interpretations.append(
+            f"OEE quality was low at {quality:.2f}%, meaning only part of available steam counted as good steam."
+        )
+    if facts["oee"]["performance_pct"] < 95.0:
+        interpretations.append(
+            f"OEE performance was {facts['oee']['performance_pct']:.2f}%, based on average thermal efficiency "
+            f"against the {facts['oee']['rated_efficiency_pct']:.1f}% rated efficiency basis."
+        )
+    if eff_delta is not None and abs(eff_delta) < 0.1:
+        interpretations.append("Thermal efficiency was stable; keep it separate from OEE availability and quality.")
+
+    return {
+        "overall_status": status,
+        "interpretations": interpretations,
+        "forbidden_claims": [
+            "Do not call CRITICAL/HIGH/WARNING alerts benign, harmless, background noise, or system notifications unless a fact explicitly classifies them that way.",
+            "Do not compare total steam mass in kg directly against rated flow in kg/hr.",
+            "Do not say alerts failed to escalate to HIGH or WARNING; severities are categories, not an escalation ladder.",
+            "Do not use 'perfect operation' when severe alerts or poor OEE metrics are present.",
+            "Do not imply boiler thermal efficiency and OEE quality/availability are the same metric.",
+        ],
+    }
+
+
+def render_shift_report_from_facts(facts, interpretations):
+    """Deterministic fallback renderer from certified facts and interpretations."""
+    window = facts["window"]
+    label = window.get("label") or "Shift"
+    duration = window.get("duration") or "the window"
+    uptime = facts["uptime_pct"]
+    anomalies = facts["anomaly_events"]
+    alerts = facts["alerts"]["by_severity"]
+    total_alerts = facts["alerts"]["total"]
+    status = interpretations["overall_status"]
+    eff = facts["efficiency"]
+    oee = facts["oee"]
+    steam = facts["steam"]
+
+    severity_parts = []
+    if alerts["CRITICAL"]: severity_parts.append(f"{alerts['CRITICAL']} critical")
+    if alerts["HIGH"]: severity_parts.append(f"{alerts['HIGH']} high")
+    if alerts["WARNING"]: severity_parts.append(f"{alerts['WARNING']} warning")
+    if alerts["LOW"]: severity_parts.append(f"{alerts['LOW']} low")
+    alert_text = f"{total_alerts} alert{'s' if total_alerts != 1 else ''}"
+    if severity_parts:
+        alert_text += f" ({', '.join(severity_parts)})"
+
+    eff_clause = ""
+    if isinstance(eff.get("end_pct"), (int, float)):
+        if isinstance(eff.get("delta_points"), (int, float)):
+            eff_clause = f" Efficiency ended at {eff['end_pct']:.1f}% ({eff['delta_points']:+.1f} pts vs start)."
+        else:
+            eff_clause = f" Efficiency ended at {eff['end_pct']:.1f}%."
+
+    summary = (
+        f"{label} - {duration} elapsed. BOILER-01 recorded {uptime:.1f}% flame uptime, "
+        f"{anomalies} anomaly event{'s' if anomalies != 1 else ''}, and {alert_text}."
+        f"{eff_clause} Overall shift status is {status.upper()}."
+    )
+
+    highlights = []
+    if severity_parts:
+        highlights.append(f"Alerts: {', '.join(severity_parts)}.")
     else:
         highlights.append("No alerts fired this shift.")
-    if anomalies:
-        highlights.append(f"{anomalies} anomaly event(s) flagged by the AI monitor.")
-    if eff_delta is not None and abs(eff_delta) >= 0.1:
-        trend = "declined" if eff_delta < 0 else "improved"
-        lo = f", low {eff_min:.1f}%" if isinstance(eff_min, (int, float)) else ""
-        highlights.append(f"Efficiency {trend} {abs(eff_delta):.1f} pts{lo}.")
-    if modes:
-        highlights.append(f"Operating modes seen: {', '.join(str(m) for m in modes)}.")
+    highlights.append(
+        f"OEE {oee['oee_pct']:.2f}% "
+        f"(availability {oee['availability_pct']:.2f}%, thermal performance {oee['performance_pct']:.2f}%, "
+        f"quality {oee['quality_pct']:.2f}%)."
+    )
+    if isinstance(oee.get("avg_efficiency_pct"), (int, float)):
+        highlights.append(
+            f"Average thermal efficiency basis: {oee['avg_efficiency_pct']:.2f}% "
+            f"vs rated {oee['rated_efficiency_pct']:.1f}%."
+        )
+    if steam.get("actual_steam_kg") is not None and steam.get("good_steam_kg") is not None:
+        highlights.append(
+            f"Steam mass: {steam['actual_steam_kg']:.2f} kg total, "
+            f"{steam['good_steam_kg']:.2f} kg counted as good steam; "
+            f"load utilization {oee.get('load_utilization_pct', 0.0):.2f}%."
+        )
+    if isinstance(eff.get("min_pct"), (int, float)) and isinstance(eff.get("max_pct"), (int, float)):
+        highlights.append(f"Efficiency range was {eff['min_pct']:.2f}% to {eff['max_pct']:.2f}%.")
+    if facts["modes_seen"]:
+        highlights.append(f"Operating modes seen: {', '.join(str(m) for m in facts['modes_seen'])}.")
 
-    # ── Follow-ups ─────────────────────────────────────────────────────────
     follow_ups = []
-    if crit:
-        follow_ups.append("Review the critical alerts before the next shift start-up.")
-    if high or warn:
-        follow_ups.append("Investigate repeated high/warning alerts for a developing fault.")
-    if eff_delta is not None and eff_delta <= -1.0:
-        follow_ups.append("Check flue-gas temperature and O2 trim for the efficiency drop.")
-    if "FAULT" in [str(m).upper() for m in modes]:
-        follow_ups.append("Confirm the boiler fully recovered from the FAULT excursion.")
+    if alerts["CRITICAL"]:
+        follow_ups.append("Review the CRITICAL alert sequence and affected tags before the next start-up.")
+    elif alerts["HIGH"] or alerts["WARNING"]:
+        follow_ups.append("Review repeated HIGH/WARNING alerts for developing operating issues.")
+    if oee["availability_pct"] < 50.0:
+        follow_ups.append("Reconcile low OEE availability against planned operating time and maintenance logs.")
+    if oee["quality_pct"] < 80.0:
+        follow_ups.append("Check pressure, steam temperature, and drum level against the good-steam limits.")
     if not follow_ups:
         follow_ups.append("No corrective action required; continue routine monitoring.")
         follow_ups.append("Verify feedwater and combustion setpoints at next shift handover.")
@@ -1414,6 +1570,184 @@ def build_shift_narrative(stats):
         "highlights": highlights[:5],
         "follow_ups": follow_ups[:4],
     }
+
+
+def validate_shift_report(narrative, facts, interpretations):
+    """
+    Validate generated prose against the fact contract.
+
+    Returns (cleaned_narrative, issues). Any issue means the caller should use
+    the deterministic fallback for the user-facing report.
+    """
+    fallback = render_shift_report_from_facts(facts, interpretations)
+
+    def as_text_list(value):
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    cleaned = {
+        "summary": str(narrative.get("summary") or "").strip(),
+        "overall_status": str(narrative.get("overall_status") or "").strip().lower(),
+        "highlights": as_text_list(narrative.get("highlights")),
+        "follow_ups": as_text_list(narrative.get("follow_ups")),
+    }
+    if not cleaned["summary"] or cleaned["overall_status"] not in ("good", "fair", "poor"):
+        return fallback, ["missing_or_invalid_required_fields"]
+
+    text = " ".join([cleaned["summary"], *cleaned["highlights"], *cleaned["follow_ups"]]).lower()
+    issues = []
+    alerts = facts["alerts"]["by_severity"]
+    severe_alerts = facts["alerts"]["severe_total"]
+
+    bad_alert_phrases = (
+        "non-operational",
+        "system notification",
+        "system notifications",
+        "background noise",
+        "benign",
+        "harmless",
+        "alert noise",
+    )
+    if severe_alerts and any(phrase in text for phrase in bad_alert_phrases):
+        issues.append("severe_alerts_softened")
+    if alerts["CRITICAL"] and f"{alerts['CRITICAL']} critical" not in text:
+        issues.append("critical_count_missing")
+    if severe_alerts and cleaned["overall_status"] != interpretations["overall_status"]:
+        issues.append("status_conflicts_with_facts")
+    if "escalat" in text and severe_alerts:
+        issues.append("severity_ladder_claim")
+    if "kg/hr" in text and ("kg against" in text or "against a rated flow" in text or "against rated flow" in text):
+        issues.append("mass_flow_unit_mix")
+    if ("perfect operation" in text or "perfect operational" in text) and (
+        severe_alerts
+        or facts["oee"]["availability_pct"] < 99.0
+        or facts["oee"]["performance_pct"] < 99.0
+        or facts["oee"]["quality_pct"] < 99.0
+    ):
+        issues.append("perfect_operation_conflicts_with_facts")
+
+    if issues:
+        return fallback, issues
+    return cleaned, []
+
+
+def build_shift_narrative(stats):
+    """Reason an end-of-shift narrative directly from the computed stats dict."""
+    facts = build_shift_facts(stats)
+    interpretations = build_shift_interpretations(facts)
+    return render_shift_report_from_facts(facts, interpretations)
+
+
+def enforce_shift_report_facts(stats, narrative):
+    """
+    Compatibility wrapper for the report validator.
+
+    Existing callers pass raw stats plus generated narrative. Internally we now
+    validate against the canonical fact contract and fall back deterministically
+    if the narrative drifts.
+    """
+    facts = build_shift_facts(stats)
+    interpretations = build_shift_interpretations(facts)
+    cleaned, _issues = validate_shift_report(narrative, facts, interpretations)
+    return cleaned
+
+
+# ============================================================
+# SHIFT REPORT REQUEST ROUTING (chat -> historical shift report)
+# ============================================================
+# The end-of-shift report card can be produced for any past shift/day, not just
+# the current live shift. A typed question like "what was the shift report for
+# 4th july" or "night shift summary yesterday" is resolved to a concrete window
+# and rendered with the SAME shift-report template (compute_shift_stats_from_rows
+# + build_shift_narrative) over historian data for that window.
+
+# Shift-name -> that shift's start hour (matches the default 6/14/22 schedule).
+_SHIFT_NAME_HOURS = {
+    "day": 6, "morning": 6, "first": 6,
+    "swing": 14, "afternoon": 14, "evening": 14, "second": 14, "middle": 14,
+    "night": 22, "graveyard": 22, "overnight": 22, "third": 22,
+}
+
+_REPORT_WORDS = ("report", "summary", "recap", "rundown", "handover", "overview", "debrief")
+
+
+def _is_shift_report_request(question):
+    """
+    True when the operator is asking for a shift/end-of-shift report in prose
+    (not the button, which carries a type marker). Requires both a report word
+    and the word 'shift' so ordinary questions that merely mention a shift
+    ('is this a good shift') are not hijacked.
+    """
+    q = (question or "").lower()
+    if "shift report" in q or "shift summary" in q or "shift handover" in q:
+        return True
+    return "shift" in q and any(w in q for w in _REPORT_WORDS)
+
+
+def parse_shift_report_target(question, now_dt):
+    """
+    Resolve the window a shift-report request refers to.
+
+    Returns (start, end, label) as tz-aware local datetimes, or None to mean
+    "the current live shift" (no past date/shift named — caller falls back to the
+    default current-shift path).
+
+    Handled forms:
+      - explicit date, no shift  -> that whole calendar day
+      - named shift (+ date)     -> that fixed 8h shift on the date (today if none)
+      - 'yesterday'              -> the whole previous calendar day
+      - 'last'/'previous shift'  -> the shift immediately before the current one
+    """
+    q = (question or "").lower()
+
+    # Named shift ("night shift", "day shift") -> its start hour.
+    named_hour = None
+    for name, hour in _SHIFT_NAME_HOURS.items():
+        if re.search(r"(?<![a-z])" + name + r"(?![a-z])", q):
+            named_hour = hour
+            break
+
+    # Calendar-date anchor: explicit date, or yesterday.
+    anchor_date = None
+    if historian_parse_explicit_date is not None:
+        explicit = historian_parse_explicit_date(q, now_dt)
+        if explicit:
+            anchor_date = explicit[0]
+    if anchor_date is None and "day before yesterday" in q:
+        anchor_date = (now_dt - timedelta(days=2)).date()
+    elif anchor_date is None and "yesterday" in q:
+        anchor_date = (now_dt - timedelta(days=1)).date()
+
+    tz = now_dt.tzinfo
+
+    # "last shift" / "previous shift" — the shift before the one now falls in.
+    if anchor_date is None and named_hour is None:
+        if any(t in q for t in ("last shift", "previous shift", "prior shift", "shift before")):
+            cur_start, _, _ = current_shift_window(now_dt)
+            prev_target = cur_start - timedelta(minutes=30)  # sits inside the previous shift
+            s, e, base = current_shift_window(prev_target)
+            return s, e, f"{base} - {s:%a %d %b}"
+        # No date/shift named -> current shift (handled by the default path).
+        return None
+
+    # A named shift, optionally on a given date.
+    if named_hour is not None:
+        d = anchor_date or now_dt.date()
+        # Aim one hour into the shift so we land squarely inside it.
+        target = datetime(d.year, d.month, d.day, named_hour, 0, tzinfo=tz) + timedelta(hours=1)
+        if anchor_date is None and target > now_dt:
+            target -= timedelta(days=1)  # that shift is still in the future today
+        s, e, base = current_shift_window(target)
+        return s, e, f"{base} - {s:%a %d %b}"
+
+    # A bare date with no shift named -> the whole calendar day.
+    start = datetime(anchor_date.year, anchor_date.month, anchor_date.day, tzinfo=tz)
+    end = min(start + timedelta(days=1), now_dt)
+    if end <= start:
+        return None
+    day_label = start.strftime("%b %d").replace(" 0", " ")
+    return start, end, f"{day_label} (full day)"
 
 
 # ============================================================
@@ -1431,6 +1765,7 @@ class AIAnalyst:
         self.mqtt_client = mqtt.Client(client_id=client_id)
         self.last_diagnosis_time = 0
         self.last_anomaly_score = 0
+        self.last_oee_publish = 0
 
         # ── Autonomous closed-loop controller state ─────────────────────
         # Deterministic policy (no LLM dependency) so the loop closes reliably.
@@ -1446,6 +1781,7 @@ class AIAnalyst:
             client.subscribe(TOPIC_ANOMALY)
             client.subscribe(TOPIC_ALERTS)
             client.subscribe(TOPIC_CHAT_IN)
+            client.subscribe(TOPIC_OEE_REQUEST)
             print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, and chat topics")
             # Publish online status
             client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
@@ -1486,6 +1822,7 @@ class AIAnalyst:
                 self.telemetry.add(payload)
                 self.stats.record_reading(payload)
                 self.evaluate_autonomous_control(payload)
+                self.publish_current_oee()
 
             elif topic == TOPIC_ANOMALY:
                 self.handle_anomaly(payload)
@@ -1496,8 +1833,131 @@ class AIAnalyst:
             elif topic == TOPIC_CHAT_IN:
                 self.handle_chat(payload)
 
+            elif topic == TOPIC_OEE_REQUEST:
+                self.handle_oee_history_request(payload)
+
         except Exception as e:
             print(f"[AI Analyst] Message error: {e}")
+
+    def _oee_snapshot_payload(self, stats, shift_start, shift_end, shift_label, data_source, payload_type="oee_update"):
+        """Build the OEE payload shared by live updates and historical responses."""
+        return {
+            "type": payload_type,
+            "timestamp": time.time(),
+            "shift_label": shift_label,
+            "shift_start": shift_start.isoformat(),
+            "shift_end": shift_end.isoformat(),
+            "shift_duration": stats.get("shift_duration"),
+            "data_source": data_source,
+            "uptime_pct": stats.get("uptime_pct"),
+            "anomaly_events": stats.get("anomaly_events", 0),
+            "alerts": stats.get("alerts", {}),
+            "efficiency": stats.get("efficiency", {}),
+            "oee": stats.get("oee", {}),
+            "modes_seen": stats.get("modes_seen", []),
+        }
+
+    def publish_current_oee(self):
+        """Publish current-shift OEE periodically for dashboard pages."""
+        now = time.time()
+        if now - self.last_oee_publish < 3.0:
+            return
+        self.last_oee_publish = now
+        shift_start, shift_end, shift_label = current_shift_window(datetime.now().astimezone())
+        stats = self.stats.snapshot()
+        payload = self._oee_snapshot_payload(
+            stats, shift_start, shift_end, shift_label, "in_memory", payload_type="oee_update"
+        )
+        self.mqtt_client.publish(TOPIC_OEE, json.dumps(payload), qos=1)
+
+    @staticmethod
+    def _timeline_from_rows(rows):
+        """Compress historian samples into simple operating-state timeline segments."""
+        if not rows:
+            return []
+
+        def state_for(row):
+            tags = row.get("tags", {})
+            mode = row.get("mode") or "NORMAL"
+            if mode == "FAULT" or not bool(tags.get("flame_status", 1)):
+                return "downtime"
+            if mode == "CRITICAL" or bool(tags.get("safety_valve", 0)):
+                return "critical"
+            if mode == "DEGRADING" or _as_float(tags.get("efficiency"), OEE_RATED_EFFICIENCY_PCT) < 82.0:
+                return "slow"
+            return "production"
+
+        segments = []
+        current = None
+        start_ts = None
+        last_ts = None
+        for row in rows:
+            ts = row["ts_epoch"]
+            state = state_for(row)
+            if current is None:
+                current = state
+                start_ts = ts
+            elif state != current:
+                segments.append({"state": current, "start": start_ts, "end": last_ts or ts})
+                current = state
+                start_ts = ts
+            last_ts = ts
+        if current is not None:
+            segments.append({"state": current, "start": start_ts, "end": last_ts or start_ts})
+        return segments[:240]
+
+    def handle_oee_history_request(self, payload):
+        """Return OEE snapshots for recent fixed shifts over MQTT."""
+        limit = int(_as_float((payload or {}).get("limit"), 7))
+        limit = max(1, min(limit, 14))
+        now_local_dt = datetime.now().astimezone()
+        current_start, current_end, current_label = current_shift_window(now_local_dt)
+        shifts = []
+
+        # Current shift first.
+        current_stats, live_start, live_end, live_label, data_source = self._resolve_shift_stats()
+        shifts.append(self._oee_snapshot_payload(
+            current_stats, live_start, live_end, live_label, data_source, payload_type="oee_shift"
+        ))
+
+        cursor = current_start - timedelta(minutes=1)
+        for _ in range(limit - 1):
+            start, end, label = current_shift_window(cursor)
+            cursor = start - timedelta(minutes=1)
+            if fetch_telemetry_window is None or count_events_window is None:
+                break
+            try:
+                rows = fetch_telemetry_window(start, end)
+                if not rows:
+                    shifts.append({
+                        "type": "oee_shift",
+                        "timestamp": time.time(),
+                        "shift_label": label,
+                        "shift_start": start.isoformat(),
+                        "shift_end": end.isoformat(),
+                        "data_source": "historian",
+                        "empty": True,
+                    })
+                    continue
+                events = count_events_window(start, end)
+                stats = compute_shift_stats_from_rows(
+                    rows, (end - start).total_seconds(), events["alerts"], events["anomaly_episodes"]
+                )
+                item = self._oee_snapshot_payload(
+                    stats, start, end, label, "historian", payload_type="oee_shift"
+                )
+                item["status_timeline"] = self._timeline_from_rows(rows)
+                shifts.append(item)
+            except Exception as e:
+                print(f"[AI Analyst] OEE history window failed ({e})")
+
+        response = {
+            "type": "oee_history",
+            "timestamp": time.time(),
+            "current_shift_label": current_label,
+            "shifts": shifts,
+        }
+        self.mqtt_client.publish(TOPIC_OEE_HISTORY, json.dumps(response), qos=1)
 
     # ============================================================
     # AUTONOMOUS CLOSED-LOOP CONTROLLER
@@ -2001,6 +2461,23 @@ class AIAnalyst:
         if not question:
             return
 
+        # Historical / explicit shift-report requests typed in chat, e.g.
+        # "what was the shift report for 4th july", "night shift summary yesterday".
+        # These reuse the SAME shift-report card template as the toolbar button,
+        # but computed over the requested past window. Resolved before intent
+        # routing so a report request is never mistaken for a sensor/OEE query.
+        if _is_shift_report_request(question):
+            window = parse_shift_report_target(question, datetime.now().astimezone())
+            target_label = "the current shift" if window is None else window[2]
+            print(f"[AI Analyst] Shift report request via chat -> {target_label}: {question[:70]}")
+            self.chat_history.append({"role": "user", "content": question})
+            self.chat_history.append({
+                "role": "assistant",
+                "content": f"[Generated the end-of-shift report for {target_label}.]",
+            })
+            self.handle_shift_report(window=window)
+            return
+
         latest_samples = self.telemetry.get_recent_samples(last_n=1)
         latest_reading = latest_samples[-1] if latest_samples else None
 
@@ -2298,44 +2775,126 @@ class AIAnalyst:
         print(f"[AI Analyst] Shift stats from in-memory (analyst uptime) for {shift_label}")
         return stats, shift_start, shift_end, shift_label, "in_memory"
 
-    def handle_shift_report(self):
-        """Generate an end-of-shift summary report for the current 8h shift."""
+    def _resolve_shift_stats_for_window(self, start, end):
+        """
+        Historian-backed shift snapshot for an explicit PAST window (used by
+        report requests that name a date/shift). Mirrors _resolve_shift_stats but
+        has no in-memory fallback — the live accumulators only describe the
+        current shift, so a window with no stored telemetry returns (None, ...).
+        Returns (stats, data_source).
+        """
+        planned_seconds = (end - start).total_seconds()
+        if fetch_telemetry_window is None or count_events_window is None:
+            print("[AI Analyst] Historian unavailable — cannot build historical shift report")
+            return None, "unavailable"
+        try:
+            rows = fetch_telemetry_window(start, end)
+            if not rows:
+                return None, "historian"
+            events = count_events_window(start, end)
+            stats = compute_shift_stats_from_rows(
+                rows, planned_seconds, events["alerts"], events["anomaly_episodes"]
+            )
+            print(f"[AI Analyst] Historical shift stats: {len(rows)} samples "
+                  f"over {start.isoformat()} - {end.isoformat()}")
+            return stats, "historian"
+        except Exception as e:
+            print(f"[AI Analyst] Historical shift query failed ({e})")
+            return None, "historian"
+
+    def _publish_empty_shift_report(self, shift_start, shift_end, shift_label):
+        """Send a shift-report card explaining that no telemetry exists for the window."""
+        report = {
+            "type": "shift_report",
+            "timestamp": time.time(),
+            "shift_label": shift_label,
+            "shift_start": shift_start.isoformat(),
+            "shift_end": shift_end.isoformat(),
+            "data_source": "historian",
+            "summary": (
+                f"No telemetry is stored for {shift_label}, so a shift report cannot be "
+                f"generated for that window. The historian only holds data from periods the "
+                f"plant was being monitored."
+            ),
+            "overall_status": "unknown",
+            "highlights": [f"No historian samples found for {shift_label}."],
+            "follow_ups": [
+                "Choose a shift or date the historian has data for.",
+                "Or ask for the current shift report.",
+            ],
+        }
+        self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(report), qos=1)
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+        print(f"[AI Analyst] Empty shift report published for {shift_label}")
+
+    def handle_shift_report(self, window=None):
+        """
+        Generate an end-of-shift summary report.
+
+        window=None  -> the current fixed 8h shift (toolbar button / default).
+        window=(start, end, label) -> a specific past shift/day requested in chat,
+        rendered with the identical report template over historian data.
+        """
         print("[AI Analyst] Shift report requested. Generating...")
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "analyzing"}), qos=1)
 
-        stats, shift_start, shift_end, shift_label, data_source = self._resolve_shift_stats()
+        if window is None:
+            stats, shift_start, shift_end, shift_label, data_source = self._resolve_shift_stats()
+        else:
+            shift_start, shift_end, shift_label = window
+            stats, data_source = self._resolve_shift_stats_for_window(shift_start, shift_end)
+            if stats is None:
+                self._publish_empty_shift_report(shift_start, shift_end, shift_label)
+                return
         stats["shift_label"] = shift_label
         stats["shift_start"] = shift_start.isoformat()
         stats["shift_end"] = shift_end.isoformat()
         stats["data_source"] = data_source
-        latest = self.telemetry.get_latest_summary()
-        trend = self.telemetry.get_context(last_n=60)
+        facts = build_shift_facts(stats)
+        interpretations = build_shift_interpretations(facts)
+
+        # Live readings only make sense for the CURRENT shift. For a historical
+        # window they would misleadingly describe "now", not the past shift, so
+        # we drop them and let the model reason purely from the stored stats.
+        is_historical = window is not None
+
+        system_content = (
+            "You are a boiler operations supervisor AI for NEXUS OS writing an end-of-shift report for BOILER-01. "
+            "The report covers the operating window named by shift_label in the facts "
+            "(a fixed 8-hour shift, or a full day when the label says so). "
+            "You are given SHIFT FACTS computed locally and APPROVED INTERPRETATIONS from deterministic rules. "
+            "Treat those as ground truth. Do not calculate new metrics, infer new causes, or reinterpret severity. "
+            "Reference the window by its label. Return strict JSON with these fields: "
+            "\"summary\" (string, 1-2 sentence narrative of the window), "
+            "\"overall_status\" (string: good/fair/poor), "
+            "\"highlights\" (array of 3-5 short strings: notable events, trends, or confirmations of stability), "
+            "\"follow_ups\" (array of 2-4 short strings: specific recommended actions for the next shift). "
+            "Cite specific values from SHIFT FACTS where relevant. Do not invent events not supported by the facts. "
+            "Obey every forbidden claim exactly."
+        )
+        if is_historical:
+            system_content += (
+                " This is a HISTORICAL report reconstructed from the historian for a PAST window. "
+                "Write it in the past tense and use only the statistics provided — do not reference the current live state."
+            )
+
+        user_content = (
+            f"WINDOW: {shift_label} (source: {data_source})\n\n"
+            f"SHIFT FACTS:\n{json.dumps(facts, indent=2)}\n\n"
+            f"APPROVED INTERPRETATIONS:\n{json.dumps(interpretations, indent=2)}\n\n"
+        )
+        if not is_historical:
+            latest = self.telemetry.get_latest_summary()
+            trend = self.telemetry.get_context(last_n=60)
+            user_content += (
+                f"CURRENT READINGS:\n{latest}\n\n"
+                f"RECENT TREND (last 60 seconds):\n{trend}\n\n"
+            )
+        user_content += "Write the end-of-shift report as JSON."
 
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a boiler operations supervisor AI for NEXUS OS writing an end-of-shift report for BOILER-01. "
-                    "The report covers ONE fixed 8-hour operating shift (the shift_label/window in the statistics), not the whole day. "
-                    "You are given hard shift statistics (computed locally — treat them as ground truth) plus current "
-                    "readings and a recent trend window. Reference the shift by its label. Return strict JSON with these fields: "
-                    "\"summary\" (string, 1-2 sentence narrative of the shift), "
-                    "\"overall_status\" (string: good/fair/poor), "
-                    "\"highlights\" (array of 3-5 short strings: notable events, trends, or confirmations of stability), "
-                    "\"follow_ups\" (array of 2-4 short strings: specific recommended actions for the next shift). "
-                    "Cite specific sensor values where relevant. Do not invent events not supported by the data."
-                )
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"SHIFT: {shift_label} (source: {data_source})\n\n"
-                    f"SHIFT STATISTICS:\n{json.dumps(stats, indent=2)}\n\n"
-                    f"CURRENT READINGS:\n{latest}\n\n"
-                    f"RECENT TREND (last 60 seconds):\n{trend}\n\n"
-                    "Write the end-of-shift report as JSON."
-                )
-            }
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
         ]
 
         # Reasoning models (qwen3.5 is the current default) are verbose, so give
@@ -2346,10 +2905,12 @@ class AIAnalyst:
         report = dict(stats)
         report["type"] = "shift_report"
         report["timestamp"] = time.time()
+        report["fact_contract"] = facts
+        report["interpretation_contract"] = interpretations
 
         # Deterministic narrative reasoned straight from the stats — always valid.
         # The LLM narrative layers on top of it when (and only when) it parses.
-        narrative = build_shift_narrative(stats)
+        narrative = render_shift_report_from_facts(facts, interpretations)
 
         llm_fields = _coerce_json_object(response) if response else None
         if isinstance(llm_fields, dict):
@@ -2362,6 +2923,11 @@ class AIAnalyst:
             print("[AI Analyst] LLM unreachable — deterministic shift narrative used")
         else:
             print(f"[AI Analyst] Non-JSON shift report — deterministic narrative used: {str(response)[:80]}")
+
+        narrative, validation_issues = validate_shift_report(narrative, facts, interpretations)
+        report["validation_issues"] = validation_issues
+        if validation_issues:
+            print(f"[AI Analyst] Shift report validation fallback: {', '.join(validation_issues)}")
 
         for key in ("summary", "overall_status", "highlights", "follow_ups"):
             report[key] = narrative[key]

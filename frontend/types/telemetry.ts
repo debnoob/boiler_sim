@@ -127,6 +127,9 @@ export interface AiResponsePayload {
   shift_start?: string;
   shift_end?: string;
   data_source?: string;
+  fact_contract?: Record<string, unknown>;
+  interpretation_contract?: Record<string, unknown>;
+  validation_issues?: string[];
   scenario?: string;
   risk_level?: string;
   steps?: Array<{ step?: number; event?: string; consequence?: string }>;
@@ -137,6 +140,46 @@ export interface AiResponsePayload {
   samples_7d?: number;
   samples_30d?: number;
   note?: string;
+}
+
+export interface OeeSnapshotPayload {
+  type?: 'oee_update' | 'oee_shift';
+  timestamp: number;
+  shift_label?: string;
+  shift_start?: string;
+  shift_end?: string;
+  shift_duration?: string;
+  data_source?: string;
+  empty?: boolean;
+  uptime_pct?: number;
+  anomaly_events?: number;
+  alerts?: Record<string, number>;
+  efficiency?: { start?: number; end?: number; min?: number; max?: number };
+  modes_seen?: string[];
+  status_timeline?: Array<{ state: 'production' | 'slow' | 'downtime' | 'critical' | 'setup' | string; start: number; end: number }>;
+  oee?: {
+    availability?: number;
+    performance?: number;
+    quality?: number;
+    oee?: number;
+    planned_seconds?: number;
+    available_seconds?: number;
+    avg_efficiency_pct?: number;
+    rated_efficiency_pct?: number;
+    load_utilization?: number;
+    actual_steam_kg?: number;
+    available_steam_kg?: number;
+    rated_steam_kg?: number;
+    good_steam_kg?: number;
+    rated_steam_flow_kg_hr?: number;
+  };
+}
+
+export interface OeeHistoryPayload {
+  type: 'oee_history';
+  timestamp: number;
+  current_shift_label?: string;
+  shifts: OeeSnapshotPayload[];
 }
 
 export interface StreamMessage {

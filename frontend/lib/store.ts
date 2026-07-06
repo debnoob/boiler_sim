@@ -18,6 +18,8 @@ import type {
   InterventionEvent,
   ControlState,
   ControlActionPayload,
+  OeeSnapshotPayload,
+  OeeHistoryPayload,
 } from '@/types/telemetry';
 
 const MAX_CHART_POINTS = 60;
@@ -26,6 +28,9 @@ const MAX_STREAM_MSGS = 30;
 const MAX_ALERTS = 20;
 const MAX_CHAT_MSGS = 25;
 const MAX_HEALTH_HISTORY = 45;
+const MAX_OEE_HISTORY = 14;
+const MAX_STATUS_SEGMENTS = 180;
+const MAX_STEAM_HOURS = 12;
 
 interface ChartSeries {
   labels: string[];
@@ -33,6 +38,20 @@ interface ChartSeries {
 }
 
 interface ScatterPoint { x: number; y: number; }
+export interface StatusTimelineSegment {
+  state: 'production' | 'slow' | 'downtime' | 'critical' | 'setup' | string;
+  start: number;
+  end: number;
+}
+
+// One clock-hour bucket of steam production, accumulated live from heartbeats.
+// steam_flow is kg/hr, sampled ~1/s, so each sample adds steam_flow/3600 kg.
+export interface SteamHourBucket {
+  hourKey: number;   // Math.floor(epochSeconds / 3600)
+  label: string;     // "14:00"
+  kg: number;        // accumulated steam mass this hour
+  samples: number;
+}
 
 export interface KpiBaseline {
   steam_pressure: number;
@@ -85,7 +104,14 @@ export interface NexusStore {
   kpiSeries: ChartSeries;           // [steam_pressure, drum_level, efficiency, tube_health]
   kpiBaseline: KpiBaseline | null;  // first observed values, for session deltas
   riskSeries: ChartSeries;          // [failure_risk] — composite reliability risk over time
+  oeeSeries: ChartSeries;           // [oee, availability, thermal performance, quality]
   scatterData: ScatterPoint[];
+  oeeSnapshot: OeeSnapshotPayload | null;
+  oeeHistory: OeeSnapshotPayload[];       // historical shift OEE, index 0 = current shift
+  statusTimeline: StatusTimelineSegment[];
+  steamHourlySeries: SteamHourBucket[];   // steam produced per clock hour (live)
+  setOeeSnapshot: (payload: OeeSnapshotPayload) => void;
+  setOeeHistory: (payload: OeeHistoryPayload) => void;
 
   // AI intervention tracking
   heartbeatCount: number;
@@ -174,6 +200,39 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       }
     }
 
+    const statusState = mode === 'FAULT' || tags.flame_status === 0
+      ? 'downtime'
+      : mode === 'CRITICAL' || tags.safety_valve
+        ? 'critical'
+        : mode === 'DEGRADING' || tags.efficiency < 82
+          ? 'slow'
+          : 'production';
+    const statusTimeline = [...state.statusTimeline];
+    const lastSegment = statusTimeline[statusTimeline.length - 1];
+    if (lastSegment && lastSegment.state === statusState) {
+      statusTimeline[statusTimeline.length - 1] = { ...lastSegment, end: now };
+    } else {
+      statusTimeline.push({ state: statusState, start: now, end: now });
+    }
+    while (statusTimeline.length > MAX_STATUS_SEGMENTS) statusTimeline.shift();
+
+    // Steam-per-hour: integrate steam_flow (kg/hr) into the current clock-hour bucket.
+    const hourKey = Math.floor(now / 3600);
+    const steamHourlySeries = [...state.steamHourlySeries];
+    const lastBucket = steamHourlySeries[steamHourlySeries.length - 1];
+    const addedKg = Math.max(0, tags.steam_flow || 0) / 3600;
+    if (lastBucket && lastBucket.hourKey === hourKey) {
+      steamHourlySeries[steamHourlySeries.length - 1] = {
+        ...lastBucket,
+        kg: lastBucket.kg + addedKg,
+        samples: lastBucket.samples + 1,
+      };
+    } else {
+      const label = new Date(hourKey * 3600 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      steamHourlySeries.push({ hourKey, label, kg: addedKg, samples: 1 });
+    }
+    while (steamHourlySeries.length > MAX_STEAM_HOURS) steamHourlySeries.shift();
+
     set({
       tags,
       degradationFactor: degradation,
@@ -189,6 +248,8 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       scatterData: newScatter,
       healthHistory,
       forecastDeadline,
+      statusTimeline,
+      steamHourlySeries,
     });
   },
 
@@ -240,7 +301,36 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
   kpiSeries: { labels: [], datasets: [[], [], [], []] },
   kpiBaseline: null,
   riskSeries: { labels: [], datasets: [[]] },
+  oeeSeries: { labels: [], datasets: [[], [], [], []] },
   scatterData: [],
+  oeeSnapshot: null,
+  oeeHistory: [],
+  statusTimeline: [],
+  steamHourlySeries: [],
+  setOeeSnapshot: (payload) => {
+    const oee = payload.oee || {};
+    set((state) => {
+      const oeeSeries = pushPoint(state.oeeSeries, [
+        (oee.oee ?? 0) * 100,
+        (oee.availability ?? 0) * 100,
+        (oee.performance ?? 0) * 100,
+        (oee.quality ?? 0) * 100,
+      ]);
+      const existing = state.oeeHistory.filter(s => s.shift_start !== payload.shift_start);
+      return {
+        oeeSnapshot: payload,
+        oeeSeries,
+        oeeHistory: [payload, ...existing].slice(0, MAX_OEE_HISTORY),
+      };
+    });
+  },
+  setOeeHistory: (payload) => {
+    const shifts = (payload.shifts || []).slice(0, MAX_OEE_HISTORY);
+    set((state) => ({
+      oeeHistory: shifts.length ? shifts : state.oeeHistory,
+      oeeSnapshot: shifts[0] && !shifts[0].empty ? shifts[0] : state.oeeSnapshot,
+    }));
+  },
   healthHistory: [],
   forecastDeadline: null,
 
