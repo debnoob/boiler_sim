@@ -158,6 +158,16 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def local_tz():
+    """This machine's local timezone (what an operator's clock shows)."""
+    return datetime.now(timezone.utc).astimezone().tzinfo
+
+
+def now_local(now: datetime | None = None) -> datetime:
+    """Current time as a tz-aware datetime in the operator's local timezone."""
+    return (now or utc_now()).astimezone(local_tz())
+
+
 def default_db_path() -> str:
     return HISTORIAN_DB_PATH
 
@@ -473,9 +483,284 @@ def insert_event(
         )
 
 
+# ── Clock-time / explicit-range parsing (operator-local time) ───────────────
+# Turns phrases like "yesterday 11am-5pm", "between 9:00 and 14:00 today", or
+# "from noon to 5pm on july 3" into a concrete [start, end) window. Clock times
+# are read in the operator's LOCAL timezone; the tz-aware datetimes returned here
+# are converted to UTC downstream by iso() when the SQL query is built.
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+# One clock time: "11", "11:30", "5pm", "11 am", "noon", "midnight".
+_TIME_CORE = r"(noon|midnight|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
+_RANGE_PATTERNS = (
+    re.compile(r"between\s+" + _TIME_CORE + r"\s+and\s+" + _TIME_CORE),
+    re.compile(r"from\s+" + _TIME_CORE + r"\s+to\s+" + _TIME_CORE),
+    re.compile(_TIME_CORE + r"\s*(?:-|–|—|to)\s*" + _TIME_CORE),
+)
+
+
+def _parse_clock_token(tok: str) -> tuple[int, int, bool] | None:
+    """Return (hour, minute, had_meridiem) for a single clock token, or None."""
+    t = tok.strip().lower()
+    if t == "noon":
+        return (12, 0, True)
+    if t == "midnight":
+        return (0, 0, True)
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$", t)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    ap = m.group(3)
+    if ap == "am" and hour == 12:
+        hour = 0
+    elif ap == "pm" and hour != 12:
+        hour += 12
+    if hour > 23 or minute > 59:
+        return None
+    return (hour, minute, ap is not None)
+
+
+_MONTH_NAMES = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+# "july 4", "july 4th", "4th july", "4 july", "4th of july".
+_DATE_MONTH_DAY = re.compile(r"\b(" + _MONTH_NAMES + r")[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\b")
+_DATE_DAY_MONTH = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(" + _MONTH_NAMES + r")[a-z]*\b")
+_DATE_ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_DATE_NUMERIC = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b")  # day/month(/year)
+
+
+def _make_date(year: int, month: int, day: int, today):
+    """Build a date, rolling to last year if it lands in the future."""
+    try:
+        d = datetime(year, month, day).date()
+    except ValueError:
+        return None
+    if d > today:  # a date later than today almost certainly means last year
+        try:
+            d = datetime(year - 1, month, day).date()
+        except ValueError:
+            return None
+    return d
+
+
+def _parse_explicit_date(q: str, current_local: datetime):
+    """
+    Resolve an explicit CALENDAR date in the question to (date, label), or None.
+    Handles month names in either order with optional ordinals ("4th july",
+    "july 4"), ISO dates, and day/month numeric dates. Does NOT match
+    yesterday/today (handled separately).
+    """
+    today = current_local.date()
+
+    m = _DATE_MONTH_DAY.search(q)
+    if m:
+        d = _make_date(today.year, _MONTHS[m.group(1)[:3]], int(m.group(2)), today)
+        if d:
+            return d, d.strftime("%b %d").replace(" 0", " ")
+
+    m = _DATE_DAY_MONTH.search(q)
+    if m:
+        d = _make_date(today.year, _MONTHS[m.group(2)[:3]], int(m.group(1)), today)
+        if d:
+            return d, d.strftime("%b %d").replace(" 0", " ")
+
+    m = _DATE_ISO.search(q)
+    if m:
+        d = _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)), today)
+        if d:
+            return d, d.isoformat()
+
+    m = _DATE_NUMERIC.search(q)
+    if m:
+        year = today.year if not m.group(3) else int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
+        d = _make_date(year, int(m.group(2)), int(m.group(1)), today)  # day/month order
+        if d:
+            return d, d.strftime("%b %d").replace(" 0", " ")
+
+    return None
+
+
+def _parse_date_anchor(q: str, current_local: datetime):
+    """Resolve the calendar day a clock range sits on. Returns (date, label)."""
+    today = current_local.date()
+    if "yesterday" in q:
+        return today - timedelta(days=1), "yesterday"
+    explicit = _parse_explicit_date(q, current_local)
+    if explicit:
+        return explicit
+    return today, "today"
+
+
+def _parse_clock_range(q: str, current: datetime):
+    """
+    Parse an explicit clock-time range into (start_local, end_local, label), or
+    None when the phrase has no two-sided clock range. tz-aware, operator-local.
+    """
+    for pattern in _RANGE_PATTERNS:
+        m = pattern.search(q)
+        if not m:
+            continue
+        start = _parse_clock_token(m.group(1))
+        end = _parse_clock_token(m.group(2))
+        if not start or not end:
+            continue
+
+        matched = m.group(0)
+        has_signal = bool(re.search(r"am|pm|:|noon|midnight", matched))
+        # 24h values (>12) also prove it is a clock range, not e.g. "3 to 5 days".
+        if not (has_signal or start[0] > 12 or end[0] > 12
+                or "yesterday" in q or "today" in q):
+            continue
+
+        s_h, s_m, s_ap = start
+        e_h, e_m, e_ap = end
+        # "2 to 5pm" -> the pm on the later token carries to the earlier one.
+        if not s_ap and e_ap and e_h >= 12 and s_h < 12:
+            s_h += 12
+
+        anchor, date_label = _parse_date_anchor(q, now_local(current))
+        tz = local_tz()
+        start_local = datetime(anchor.year, anchor.month, anchor.day, s_h, s_m, tzinfo=tz)
+        end_local = datetime(anchor.year, anchor.month, anchor.day, e_h, e_m, tzinfo=tz)
+        if end_local <= start_local:  # crosses midnight, or midnight-as-end-of-day
+            end_local += timedelta(days=1)
+
+        now_l = now_local(current)
+        end_local = min(end_local, now_l)  # never query into the future
+        earliest = now_l - timedelta(days=RETENTION_DAYS)
+        start_local = max(start_local, earliest)
+        if end_local <= start_local:  # window entirely in the future / out of range
+            return None
+
+        label = f"{date_label} {start_local:%H:%M}-{end_local:%H:%M}"
+        return start_local, end_local, label
+    return None
+
+
+def _llm_extract_time_range(question: str, current: datetime):
+    """
+    Groq LLM fallback for phrasings the regex misses (e.g. "the first two hours
+    after 8am yesterday"). Returns (start_local, end_local, label) or None.
+    Self-contained (no ai_analyst import) to avoid a circular dependency.
+    """
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        return None
+    try:
+        import requests
+    except Exception:
+        return None
+
+    now_l = now_local(current)
+    model = os.environ.get("GROQ_ROUTER_MODEL", "qwen/qwen3.6-27b")
+    url = os.environ.get("GROQ_CHAT_URL", "https://api.groq.com/openai/v1/chat/completions")
+    system = (
+        "You extract a time window from an operator's question about historical "
+        "boiler data. 'Now' in the operator's local time is "
+        f"{now_l:%Y-%m-%d %H:%M} ({now_l.tzname()}). "
+        "Reply with ONLY JSON: {\"start_local\":\"YYYY-MM-DD HH:MM\","
+        "\"end_local\":\"YYYY-MM-DD HH:MM\"} for a concrete past window, or "
+        "{\"none\":true} if the question names no time window. Local time, 24h."
+    )
+    try:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": question},
+                ],
+                "temperature": 0.0,
+                # Room for the full <think> trace AND the JSON after it; too small
+                # a budget truncates before the closing </think> and the answer
+                # (this model's self-verification can run long, but is fast on Groq).
+                "max_tokens": 2048,
+                # No response_format: this reasoning model emits a <think> block
+                # first, which fails Groq's json_object validation. We strip the
+                # think block and extract the JSON ourselves below instead.
+            },
+            # Generous: the reasoning trace before the JSON can take several seconds.
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return None
+        text = resp.json()["choices"][0]["message"]["content"] or ""
+    except Exception:
+        return None
+
+    # Only trust JSON emitted AFTER the reasoning block. If the block never closed
+    # (reasoning truncated), don't scrape half-formed JSON out of the reasoning.
+    if "<think>" in text and "</think>" not in text:
+        return None
+    if "</think>" in text:
+        text = text.split("</think>")[-1]
+    text = text.strip()
+
+    data = None
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        a, b = text.find("{"), text.rfind("}")
+        if a != -1 and b > a:
+            try:
+                data = json.loads(text[a:b + 1])
+            except ValueError:
+                data = None
+    if not isinstance(data, dict) or data.get("none"):
+        return None
+
+    # Small models drift on key names and datetime format — accept the variants.
+    tz = local_tz()
+    start_local = _to_local_dt(data.get("start_local") or data.get("start_time") or data.get("start"), tz)
+    end_local = _to_local_dt(data.get("end_local") or data.get("end_time") or data.get("end"), tz)
+    if not start_local or not end_local:
+        return None
+
+    end_local = min(end_local, now_l)
+    start_local = max(start_local, now_l - timedelta(days=RETENTION_DAYS))
+    if end_local <= start_local:
+        return None
+    label = f"{start_local:%Y-%m-%d %H:%M}-{end_local:%H:%M}"
+    return start_local, end_local, label
+
+
+def _to_local_dt(value: Any, tz) -> datetime | None:
+    """Parse a model-supplied datetime (ISO with offset, or 'YYYY-MM-DD HH:MM')
+    into a tz-aware local datetime; naive values are assumed local."""
+    if not value:
+        return None
+    text = str(value).strip().replace("Z", "+00:00")
+    dt = None
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
+            try:
+                dt = datetime.strptime(text, fmt)
+                break
+            except ValueError:
+                continue
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
+
+
 def parse_time_range(question: str, now: datetime | None = None) -> tuple[datetime, datetime, str]:
     current = now or utc_now()
     q = question.lower()
+
+    # Explicit clock-time range first, e.g. "yesterday 11am-5pm" (local time).
+    clock = _parse_clock_range(q, current)
+    if clock:
+        return clock
 
     match = re.search(
         r"last\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
@@ -502,10 +787,11 @@ def parse_time_range(question: str, now: datetime | None = None) -> tuple[dateti
         return start, current, f"last {amount} {unit}"
 
     if "yesterday" in q:
-        local_midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
+        local_midnight = now_local(current).replace(hour=0, minute=0, second=0, microsecond=0)
         return local_midnight - timedelta(days=1), local_midnight, "yesterday"
     if "today" in q:
-        return current.replace(hour=0, minute=0, second=0, microsecond=0), current, "today"
+        local_midnight = now_local(current).replace(hour=0, minute=0, second=0, microsecond=0)
+        return local_midnight, now_local(current), "today"
     if "this shift" in q or "current shift" in q:
         return current - timedelta(hours=8), current, "current shift"
     if "last shift" in q or "previous shift" in q:
@@ -517,6 +803,22 @@ def parse_time_range(question: str, now: datetime | None = None) -> tuple[dateti
         return current - timedelta(days=7), current, "last week"
     if "3 month" in q or "three month" in q or "quarter" in q:
         return current - timedelta(days=90), current, "last 3 months"
+
+    # A bare calendar date with no clock range means the WHOLE day, e.g.
+    # "efficiency for 4th july" -> local midnight..midnight (clamped to now).
+    explicit_date = _parse_explicit_date(q, now_local(current))
+    if explicit_date:
+        d, dlabel = explicit_date
+        tz = local_tz()
+        start = datetime(d.year, d.month, d.day, tzinfo=tz)
+        end = min(start + timedelta(days=1), now_local(current))
+        if end > start:
+            return start, end, dlabel
+
+    # LLM fallback for unusual phrasings the regex above could not resolve.
+    llm = _llm_extract_time_range(question, current)
+    if llm:
+        return llm
 
     return current - timedelta(hours=1), current, "last 1 hour"
 
@@ -563,7 +865,23 @@ def is_historical_question(question: str) -> bool:
         "before",
         "between",
     )
-    return any(term in q for term in historical_terms)
+    if any(term in q for term in historical_terms):
+        return True
+    # Explicit clock times ("11am", "17:00"), month names, or "from X to Y" all
+    # imply a historical window even without a keyword above.
+    return bool(_HAS_EXPLICIT_TIME.search(q))
+
+
+# am/pm or HH:MM clock times, calendar dates (month name in either order with
+# optional ordinal, ISO, or day/month numeric), or "from ... to" range phrasing.
+_HAS_EXPLICIT_TIME = re.compile(
+    r"\b\d{1,2}\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|"
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?\b|"
+    r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|"
+    r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|"
+    r"\bfrom\s+\d.*\bto\s+\d",
+    re.IGNORECASE,
+)
 
 
 def _bucket_for_range(start: datetime, end: datetime) -> int:
