@@ -4,14 +4,10 @@ import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useNexusStore } from '@/lib/store';
 import { calcRisk, calcDerivedMetrics, formatEta } from '@/lib/utils';
+import { vizPalette, toneColor } from '@/lib/vizPalette';
 import { Sparkline } from '@/components/charts/Sparkline';
 import { TrendTile } from '@/components/charts/TrendTile';
 import { AlarmSummary } from '@/components/AlarmSummary';
-
-const TONE: Record<string, string> = { good: '#22c55e', warn: '#fbbf24', bad: '#ef4444' };
-const VALUE_COLOR: Record<string, string> = { ok: 'var(--tx-primary)', warn: '#fbbf24', crit: '#ef4444', neutral: 'var(--tx-primary)' };
-const BORDER: Record<string, string> = { ok: '#22c55e', warn: '#fbbf24', crit: '#ef4444', neutral: 'var(--bd-inner)' };
-const SPARK: Record<string, string> = { ok: '#22c55e', warn: '#fbbf24', crit: '#ef4444', neutral: '#64748b' };
 
 type Status = 'ok' | 'warn' | 'crit' | 'neutral';
 type Polarity = 'higher-better' | 'neutral';
@@ -28,8 +24,16 @@ interface KpiDef {
   reference: string;
 }
 
-function KpiCard({ k, onClick }: { k: KpiDef; onClick?: () => void }) {
+function KpiCard({ k, isLight, onClick }: { k: KpiDef; isLight: boolean; onClick?: () => void }) {
   const valueStr = k.current != null ? k.current.toFixed(k.decimals) : '--';
+  const pal = vizPalette(isLight);
+  const statusHue = k.status === 'ok' ? pal.status.good
+    : k.status === 'warn' ? pal.status.warn
+    : k.status === 'crit' ? pal.status.crit
+    : null;
+  const borderColor = statusHue ?? 'var(--bd-inner)';
+  const valueColor = k.status === 'warn' ? pal.status.warn : k.status === 'crit' ? pal.status.crit : 'var(--tx-primary)';
+  const sparkColor = statusHue ?? '#64748b';
 
   let delta: React.ReactNode = null;
   if (k.current != null && k.base != null) {
@@ -38,7 +42,7 @@ function KpiCard({ k, onClick }: { k: KpiDef; onClick?: () => void }) {
     const isFlat = Math.abs(d) < flatEps;
     const arrow = isFlat ? '▬' : d > 0 ? '▲' : '▼';
     let dColor = 'var(--tx-muted)';
-    if (!isFlat && k.polarity === 'higher-better') dColor = d > 0 ? '#22c55e' : '#ef4444';
+    if (!isFlat && k.polarity === 'higher-better') dColor = d > 0 ? pal.status.good : pal.status.crit;
     delta = (
       <span style={{ fontSize: 12, fontWeight: 700, color: dColor, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
         {arrow} {d >= 0 ? '+' : ''}{d.toFixed(k.decimals)}
@@ -55,7 +59,7 @@ function KpiCard({ k, onClick }: { k: KpiDef; onClick?: () => void }) {
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); } : undefined}
     >
-      <div style={{ height: 3, background: BORDER[k.status] }} />
+      <div style={{ height: 3, background: borderColor }} />
       <div style={{ padding: '13px 16px 14px', display: 'flex', flexDirection: 'column', gap: 9 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--tx-muted)' }}>
@@ -65,14 +69,14 @@ function KpiCard({ k, onClick }: { k: KpiDef; onClick?: () => void }) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.03em', color: VALUE_COLOR[k.status], fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'baseline', gap: 4 }}>
+          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.03em', color: valueColor, fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'baseline', gap: 4 }}>
             {valueStr}
             {valueStr !== '--' && <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.6 }}>{k.unit}</span>}
           </div>
           {delta}
         </div>
 
-        <Sparkline data={k.series} color={SPARK[k.status]} height={30} />
+        <Sparkline data={k.series} color={sparkColor} height={30} />
 
         <div style={{ fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500 }}>{k.reference}</div>
       </div>
@@ -85,8 +89,9 @@ export default function OverviewPage() {
   const {
     tags, degradationFactor, mode, mqttStatus, anomalyScore, anomalyIsAnomaly,
     aiStatus, forecastDeadline, healthHistory, moiraiForecast, kpiSeries, kpiBaseline,
-    riskSeries, anomalySeries,
+    riskSeries, anomalySeries, isLight,
   } = useNexusStore();
+  const pal = vizPalette(isLight);
 
   const risk = tags ? calcRisk(tags, degradationFactor) : 0;
   const derived = useMemo(() => tags ? calcDerivedMetrics(tags) : null, [tags]);
@@ -156,17 +161,17 @@ export default function OverviewPage() {
             <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--tx-muted)' }}>
               {c.label}
             </span>
-            <strong style={{ fontSize: 18, fontWeight: 800, color: TONE[c.tone], fontVariantNumeric: 'tabular-nums' }}>
+            <strong style={{ fontSize: 18, fontWeight: 800, color: toneColor(c.tone, isLight), fontVariantNumeric: 'tabular-nums' }}>
               {c.value}
             </strong>
-            <span style={{ position: 'absolute', top: 14, right: 14, width: 8, height: 8, borderRadius: '50%', background: TONE[c.tone], opacity: 0.85 }} />
+            <span style={{ position: 'absolute', top: 14, right: 14, width: 8, height: 8, borderRadius: '50%', background: toneColor(c.tone, isLight), opacity: 0.85 }} />
           </div>
         ))}
       </div>
 
       {/* KPI cards with sparklines + deltas */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
-        {kpiCards.map(k => <KpiCard key={k.label} k={k} onClick={() => router.push('/predictive')} />)}
+        {kpiCards.map(k => <KpiCard key={k.label} k={k} isLight={isLight} onClick={() => router.push('/predictive')} />)}
       </div>
 
       {/* Health headline trend strip */}
@@ -175,11 +180,11 @@ export default function OverviewPage() {
           Health Signals · last 60s
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16 }}>
-          <TrendTile label="Efficiency" unit="%" color="#10b981"
+          <TrendTile label="Efficiency" unit="%" color={pal.status.good}
             value={tags ? tags.efficiency.toFixed(1) : '--'} data={kpiSeries.datasets[2]} />
-          <TrendTile label="Failure Risk" unit="%" color="#ef4444"
+          <TrendTile label="Failure Risk" unit="%" color={pal.status.crit}
             value={`${risk}`} data={riskSeries.datasets[0]} />
-          <TrendTile label="Anomaly Score" unit="%" color="#a855f7"
+          <TrendTile label="Anomaly Score" unit="%" color={pal.factor.quality}
             value={`${anomalyScore}`} data={anomalySeries.datasets[0]} />
         </div>
       </div>

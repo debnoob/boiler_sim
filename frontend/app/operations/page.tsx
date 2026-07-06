@@ -5,6 +5,7 @@ import { Chart as ChartJS, registerables, type ScriptableContext } from 'chart.j
 import { Doughnut, Bar } from 'react-chartjs-2';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
+import { vizPalette, hexA, oeeColor as oeeColorFn, stateColor as stateColorFn } from '@/lib/vizPalette';
 import type { OeeSnapshotPayload, DiagnosisPayload } from '@/types/telemetry';
 
 ChartJS.register(...registerables);
@@ -25,10 +26,6 @@ const fmtKg = (v?: number) =>
   v == null ? '--' : v >= 1000 ? `${(v / 1000).toFixed(1)} t` : `${Math.round(v)} kg`;
 const fmtTime = (sec: number) =>
   new Date(sec * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-const hexA = (hex: string, a: number) => {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-};
 
 // Smoothly animate a number toward its target (ease-out cubic).
 function useCountUp(target: number, duration = 550) {
@@ -319,25 +316,15 @@ export default function OperationsPage() {
     publish(TOPIC_OEE_REQUEST, { limit: 7 });
   }, [publish]);
 
-  // ── Theme-aware, validated palettes ──
-  const F = isLight
-    ? { avail: '#2a78d6', thermal: '#0e93a8', quality: '#4a3aa7' }
-    : { avail: '#3987e5', thermal: '#1298ad', quality: '#9085e9' };
-  const S = isLight
-    ? { good: '#16a34a', warn: '#d97706', crit: '#dc2626' }
-    : { good: '#22c55e', warn: '#f59e0b', crit: '#ef4444' };
-  const stateColor = (st: string) =>
-    st === 'production' ? S.good
-      : st === 'slow' ? S.warn
-      : st === 'downtime' ? S.crit
-      : st === 'critical' ? (isLight ? '#ea580c' : '#f97316')
-      : st === 'setup' ? F.avail
-      : '#64748b';
-  const oeeColor = (o: number) => (o >= 85 ? S.good : o >= 75 ? (isLight ? '#ca8a04' : '#eab308') : o >= 60 ? S.warn : S.crit);
-
-  const trackColor = isLight ? '#e2e8f0' : '#1f2a36';
-  const tickColor = isLight ? '#64748b' : '#8b96a3';
-  const gridColor = isLight ? 'rgba(15,23,42,0.06)' : 'rgba(255,255,255,0.045)';
+  // ── Theme-aware, validated palette (shared with Overview) ──
+  const P = vizPalette(isLight);
+  const F = P.factor;
+  const S = P.status;
+  const stateColor = (st: string) => stateColorFn(st, isLight);
+  const oeeColor = (o: number) => oeeColorFn(o, isLight);
+  const trackColor = P.track;
+  const tickColor = P.tick;
+  const gridColor = P.grid;
 
   const shifts = useMemo(() => oeeHistory.filter((s) => s && !s.empty), [oeeHistory]);
   const currentSnap: OeeSnapshotPayload | null = oeeSnapshot ?? shifts[0] ?? null;
