@@ -717,6 +717,55 @@ def detect_pid_issues(samples: list[dict]) -> list[TuningIssue]:
 # ============================================================
 # 5. EFFICIENCY CHAIN NARRATIVE
 # ============================================================
+def compute_efficiency_losses(tags: dict) -> dict:
+    """
+    Deterministic heat-loss split from live tags. Single source of truth for the
+    diagnosis narrative and the operator-facing 'where am I losing efficiency'
+    chat answer, so both quote identical numbers. Mirrors calculate_efficiency in
+    boiler_engine.py. Components are returned unranked; the caller sorts them.
+    """
+    eff   = tags.get("efficiency", BASELINES["efficiency"])
+    fgt   = tags.get("flue_gas_temp", BASELINES["flue_gas_temp"])
+    o2    = tags.get("o2_percent", BASELINES["o2_percent"])
+    th    = tags.get("tube_health", BASELINES["tube_health"])
+    fuel  = tags.get("fuel_flow", BASELINES["fuel_flow"])
+    steam = tags.get("steam_flow", BASELINES["steam_flow"])
+
+    stack_loss      = max(0.0, (fgt - 150.0) * 0.04)
+    excess_air_loss = max(0.0, (o2 - 3.0) * 0.8)
+    ua_factor       = th / 97.0  # approximate from tube health
+    fouling_loss    = max(0.0, (1.0 - ua_factor) * 15.0)
+    total_loss      = stack_loss + excess_air_loss + fouling_loss
+    heat_rate       = (fuel * 35.5 * 1000.0) / max(steam, 1.0)  # kJ/kg approx
+
+    return {
+        "efficiency": eff,
+        "baseline": BASELINES["efficiency"],
+        "total_loss": total_loss,
+        "heat_rate": heat_rate,
+        "components": [
+            {
+                "name": "Stack heat loss",
+                "pct": stack_loss,
+                "driver": f"flue-gas temp {fgt:.1f}C vs 198C baseline",
+                "lever": "Recover stack heat: check economizer, soot-blowing, and firing rate.",
+            },
+            {
+                "name": "Excess-air loss",
+                "pct": excess_air_loss,
+                "driver": f"O2 {o2:.2f}% vs the 3.0% optimal",
+                "lever": "Trim combustion air toward ~3% O2 to cut excess-air loss.",
+            },
+            {
+                "name": "Tube-fouling loss",
+                "pct": fouling_loss,
+                "driver": f"tube health {th:.1f}%",
+                "lever": "Schedule tube cleaning/inspection to restore heat transfer.",
+            },
+        ],
+    }
+
+
 def build_efficiency_narrative(tags: dict, deviations: list[SensorDeviation]) -> Optional[str]:
     """
     Build a concise efficiency chain explanation from deterministic values.

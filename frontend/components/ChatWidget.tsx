@@ -39,6 +39,7 @@ export function ChatWidget() {
     <>
       {/* ── Panel ──────────────────────────────────────────── */}
       <div
+        className="chat-widget-panel"
         aria-hidden={!open}
         style={{
           position: 'fixed',

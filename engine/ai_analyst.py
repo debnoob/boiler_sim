@@ -24,6 +24,7 @@ load_dotenv()
 from deterministic_analyst import (
     build_physics_brief,
     format_brief_for_llm,
+    compute_efficiency_losses,
     HYPOTHESIS_LABELS,
 )
 from safety_policy import (
@@ -40,7 +41,14 @@ try:
         build_historian_context,
         fetch_telemetry_window,
         count_events_window,
+        telemetry_coverage,
+        event_timeline as historian_event_timeline,
+        parse_time_range as historian_parse_time_range,
         _parse_explicit_date as historian_parse_explicit_date,
+        _parse_clock_range as historian_parse_clock_range,
+        _parse_explicit_date_range as historian_parse_explicit_date_range,
+        _parse_datetime_range as historian_parse_datetime_range,
+        _parse_single_clock_time as historian_parse_single_clock_time,
     )
 except Exception:
     answer_historical_metric_question = None
@@ -48,7 +56,14 @@ except Exception:
     build_historian_context = None
     fetch_telemetry_window = None
     count_events_window = None
+    telemetry_coverage = None
+    historian_event_timeline = None
+    historian_parse_time_range = None
     historian_parse_explicit_date = None
+    historian_parse_clock_range = None
+    historian_parse_explicit_date_range = None
+    historian_parse_datetime_range = None
+    historian_parse_single_clock_time = None
 
 # ============================================================
 # MANUAL KNOWLEDGE (in-prompt, keyword-routed — no vector DB)
@@ -118,6 +133,7 @@ TOPIC_CHAT_IN = "factory/pumphouse4/boiler/unit01/ai/question"
 TOPIC_CHAT_OUT = "factory/pumphouse4/boiler/unit01/ai/response"
 TOPIC_DIAGNOSIS = "factory/pumphouse4/boiler/unit01/ai/diagnosis"
 TOPIC_AI_STATUS = "factory/pumphouse4/boiler/unit01/ai/status"
+TOPIC_FORECAST = "factory/pumphouse4/boiler/unit01/ai/forecast"
 TOPIC_OEE = "factory/pumphouse4/boiler/unit01/kpi/oee"
 TOPIC_OEE_REQUEST = "factory/pumphouse4/boiler/unit01/kpi/oee/request"
 TOPIC_OEE_HISTORY = "factory/pumphouse4/boiler/unit01/kpi/oee/history"
@@ -1685,21 +1701,105 @@ def _is_shift_report_request(question):
     return "shift" in q and any(w in q for w in _REPORT_WORDS)
 
 
+def _future_window(label, start, now_dt):
+    """
+    Build the (None, None, message) result used when a requested report window is
+    still in the future. The message is what the operator sees instead of a report.
+    """
+    message = (
+        f"The window you asked for ({label}) is in the future — it starts at "
+        f"{start:%b %d %H:%M} but the time now is {now_dt:%b %d %H:%M}, so there is "
+        f"no telemetry for it yet. Ask again once the window has elapsed, or request "
+        f"a past shift, date, or time range."
+    )
+    return None, None, message
+
+
 def parse_shift_report_target(question, now_dt):
     """
     Resolve the window a shift-report request refers to.
 
     Returns (start, end, label) as tz-aware local datetimes, or None to mean
     "the current live shift" (no past date/shift named — caller falls back to the
-    default current-shift path).
+    default current-shift path). Returns (None, None, message) when the requested
+    window lies entirely in the future, so the caller can explain that rather than
+    silently reporting something else.
 
     Handled forms:
+      - explicit clock range     -> exactly that sub-window (e.g. "4th july 3pm-4pm")
+      - cross-day clock range    -> spanning two dates ("july 4th 3pm to july 5th 2am")
+      - single time point        -> the 8h shift containing it ("at 3pm on july 4th")
+      - rolling duration         -> the trailing window up to now ("last 2 hours")
+      - multi-day date range     -> the whole span ("from july 1 to july 4")
       - explicit date, no shift  -> that whole calendar day
+      - 'today'                  -> today from 00:00 up to now (partial day)
       - named shift (+ date)     -> that fixed 8h shift on the date (today if none)
       - 'yesterday'              -> the whole previous calendar day
       - 'last'/'previous shift'  -> the shift immediately before the current one
+      - future window            -> (None, None, message) explaining it hasn't happened
     """
     q = (question or "").lower()
+
+    # Explicit clock range ("3pm to 4pm", "between 14:00 and 15:30", "from 2 to 5pm")
+    # -> report over exactly that sub-window, on the named date (or today). This is
+    # the most specific form, so it wins over a bare date/named-shift match: an
+    # operator who names a time span wants the report bounded to that span, not the
+    # whole calendar day the date resolves to. A window still wholly in the future
+    # (e.g. "between 2pm and 6pm" asked at 10am) is reported back as unavailable
+    # rather than silently falling through to the current live shift.
+    if historian_parse_clock_range is not None:
+        clock = historian_parse_clock_range(q, now_dt, return_future=True)
+        if clock and clock[0] == "future":
+            _, fstart, fend, flabel = clock
+            return _future_window(flabel, fstart, now_dt)
+        if clock:
+            start, end, base_label = clock
+            return start, end, f"{base_label} (custom range)"
+
+    # Cross-day clock range ("from july 4th 3pm to july 5th 2am") -> the precise
+    # datetime span across both dates. Must run before the multi-day DATE range
+    # below, which would otherwise ignore the times and report both full days.
+    if historian_parse_datetime_range is not None:
+        dt_range = historian_parse_datetime_range(q, now_dt)
+        if dt_range:
+            start, end, base_label = dt_range
+            if start >= now_dt:
+                return _future_window(base_label, start, now_dt)
+            end = min(end, now_dt)
+            if end > start:
+                return start, end, f"{base_label} (custom range)"
+
+    # Rolling duration ("last 2 hours", "past 30 minutes", "last hour") -> the
+    # trailing window ending now. Anchored to now, so it needs no date. The
+    # hour/minute unit is required, so "last shift" / "previous shift" below are
+    # untouched. Checked before the date logic since "last" would otherwise be
+    # ambiguous.
+    dur = re.search(r"\b(?:last|past)\s+(\d+)?\s*(hours?|hrs?|minutes?|mins?)\b", q)
+    if dur:
+        n = int(dur.group(1)) if dur.group(1) else 1
+        unit = dur.group(2)
+        if unit.startswith(("hour", "hr")):
+            delta, unit_word = timedelta(hours=n), "hour" if n == 1 else "hours"
+        else:
+            delta, unit_word = timedelta(minutes=n), "minute" if n == 1 else "minutes"
+        start = now_dt - delta
+        return start, now_dt, f"last {n} {unit_word} ({start:%H:%M}-{now_dt:%H:%M})"
+
+    # Multi-day calendar range ("from july 1 to july 4") -> the whole span, end
+    # clamped to now. Runs before the single-date anchor below, which would
+    # otherwise grab only the first date and silently report just that one day.
+    if historian_parse_explicit_date_range is not None:
+        date_range = historian_parse_explicit_date_range(q, now_dt)
+        if date_range:
+            start_date, end_date, range_label = date_range
+            tz = now_dt.tzinfo
+            start = datetime(start_date.year, start_date.month, start_date.day, tzinfo=tz)
+            end = min(
+                datetime(end_date.year, end_date.month, end_date.day, tzinfo=tz) + timedelta(days=1),
+                now_dt,
+            )
+            if end > start:
+                return start, end, f"{range_label} (date range)"
 
     # Named shift ("night shift", "day shift") -> its start hour.
     named_hour = None
@@ -1714,12 +1814,34 @@ def parse_shift_report_target(question, now_dt):
         explicit = historian_parse_explicit_date(q, now_dt)
         if explicit:
             anchor_date = explicit[0]
+    is_today = False
     if anchor_date is None and "day before yesterday" in q:
         anchor_date = (now_dt - timedelta(days=2)).date()
     elif anchor_date is None and "yesterday" in q:
         anchor_date = (now_dt - timedelta(days=1)).date()
+    elif anchor_date is None and re.search(r"(?<![a-z])today(?![a-z])", q):
+        anchor_date = now_dt.date()
+        is_today = True
 
     tz = now_dt.tzinfo
+
+    # Single time point ("at 3pm on july 4th", "at 3pm") with no shift named ->
+    # the fixed 8h shift that CONTAINS that moment. Runs after ranges/durations,
+    # so any leftover time here is a single point. Skipped when a shift is named
+    # (that branch is more specific) so "day shift at 3pm" stays the day shift.
+    if named_hour is None and historian_parse_single_clock_time is not None:
+        point = historian_parse_single_clock_time(q, now_dt)
+        if point:
+            p_h, p_m = point
+            d = anchor_date or now_dt.date()
+            target = datetime(d.year, d.month, d.day, p_h, p_m, tzinfo=tz)
+            # No explicit date and the time is still ahead today -> it hasn't happened.
+            if anchor_date is None and target > now_dt:
+                return _future_window(f"{target:%H:%M} today", target, now_dt)
+            if target > now_dt:  # explicit future date/time
+                return _future_window(f"{target:%b %d %H:%M}", target, now_dt)
+            s, e, base = current_shift_window(target)
+            return s, e, f"{base} - {s:%a %d %b} (contains {target:%H:%M})"
 
     # "last shift" / "previous shift" — the shift before the one now falls in.
     if anchor_date is None and named_hour is None:
@@ -1741,13 +1863,396 @@ def parse_shift_report_target(question, now_dt):
         s, e, base = current_shift_window(target)
         return s, e, f"{base} - {s:%a %d %b}"
 
-    # A bare date with no shift named -> the whole calendar day.
+    # A bare date with no shift named -> the whole calendar day (or today so far).
     start = datetime(anchor_date.year, anchor_date.month, anchor_date.day, tzinfo=tz)
     end = min(start + timedelta(days=1), now_dt)
     if end <= start:
         return None
     day_label = start.strftime("%b %d").replace(" 0", " ")
-    return start, end, f"{day_label} (full day)"
+    suffix = "today so far" if is_today else "full day"
+    return start, end, f"{day_label} ({suffix})"
+
+
+# ============================================================
+# PREDICTIVE / FORECAST CHAT ANSWERS  (#1)
+# ============================================================
+# The forecasting_engine publishes a short-horizon (~60s) Moirai forecast for
+# tube_health, efficiency, and steam_pressure. These helpers turn "when will X
+# reach Y" operator questions into an ETA from that forecast (or, for other tags
+# and when no forecast is cached, from the recent telemetry trend).
+
+# Per-metric default breach threshold + which direction is bad ("down" = lower is
+# worse, "up" = higher is worse). Used when the operator names no explicit target.
+_FORECAST_DEFAULTS = {
+    "tube_health":    (THRESHOLDS["tube_health_inspect"], "down"),   # 70% inspect
+    "efficiency":     (82.0, "down"),                                # low-warning band
+    "steam_pressure": (THRESHOLDS["steam_pressure_high"], "up"),     # 13.0 bar high
+    "drum_level":     (THRESHOLDS["drum_level_low"], "down"),        # 280 mm low
+    "flue_gas_temp":  (THRESHOLDS["flue_gas_temp_high"], "up"),      # 240 C high
+}
+
+
+def _is_forecast_question(question):
+    q = (question or "").lower()
+    if "what if" in q or q.strip().startswith("if "):
+        return False  # hypothetical -> the what-if simulator, not a projection
+    triggers = (
+        "when will", "when do", "when does", "when are", "when is it going",
+        "how long until", "how long till", "how long before", "time to reach",
+        "time until", "time to breach", "eta", "projected to", "expected to reach",
+        "going to reach", "going to hit", "forecast", "predict", "on track to",
+    )
+    if any(t in q for t in triggers):
+        return True
+    if q.startswith("will ") or " will " in q:
+        return any(w in q for w in (
+            "reach", "hit", "drop", "fall", "exceed", "breach", "cross", "trip", "below", "above"
+        ))
+    return False
+
+
+def _parse_threshold(question):
+    """Pull an explicit numeric target and (if stated) direction from the question."""
+    q = (question or "").lower()
+    m = re.search(
+        r"(below|under|beneath|less than|down to|above|over|exceed[s]?|greater than|"
+        r"up to|reach(?:es)?|hit(?:s)?|cross(?:es)?|trips?(?: at)?|to|of|=)\s*"
+        r"(\d+(?:\.\d+)?)",
+        q,
+    )
+    if not m:
+        return None, None
+    word, num = m.group(1), float(m.group(2))
+    if word in ("below", "under", "beneath", "less than", "down to"):
+        direction = "down"
+    elif word in ("above", "over", "exceed", "exceeds", "greater than", "up to"):
+        direction = "up"
+    else:
+        direction = None  # neutral verb (reach/hit/to) -> use the metric default
+    return num, direction
+
+
+def _project_eta(series, threshold, direction):
+    """
+    Least-squares slope over a ~1s-spaced value series, then seconds until it
+    reaches threshold in the bad direction. None if not trending that way.
+    """
+    vals = [v for v in series if v is not None]
+    if len(vals) < 3:
+        return None
+    n = len(vals)
+    xs = list(range(n))
+    mx = sum(xs) / n
+    my = sum(vals) / n
+    denom = sum((x - mx) ** 2 for x in xs)
+    if denom == 0:
+        return None
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, vals)) / denom  # per sample (~1s)
+    cur = vals[-1]
+    if direction == "down":
+        if slope >= -1e-9:
+            return None
+    else:
+        if slope <= 1e-9:
+            return None
+    eta = (threshold - cur) / slope
+    return eta if eta > 0 else None
+
+
+def _fmt_duration(seconds):
+    if seconds is None:
+        return None
+    if seconds < 90:
+        return f"{int(round(seconds))} seconds"
+    if seconds < 5400:
+        return f"{seconds / 60.0:.0f} minutes"
+    if seconds < 172800:
+        return f"{seconds / 3600.0:.1f} hours"
+    return f"{seconds / 86400.0:.1f} days"
+
+
+# ============================================================
+# ALARM / EVENT HISTORY CHAT ANSWERS  (#2)
+# ============================================================
+def _is_alarm_history_question(question):
+    q = (question or "").lower()
+    alarm_words = ("alarm", "alert", "event", "trip", "fault", "excursion")
+    if not any(w in q for w in alarm_words):
+        return False
+    signals = (
+        "history", "list", "show", "recent", "last", "latest", "today", "yesterday",
+        "shift", "how many", "count", "fired", "logged", "were there", "was there",
+        "any ", "did any", "past", "hour", "week", "between", "from ", "summary",
+        "so far", "overnight", "happened", "occurred",
+    )
+    return any(s in q for s in signals)
+
+
+def _fmt_event_time(ts):
+    """Format a stored UTC event timestamp as a local HH:MM (falls back to raw)."""
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return dt.astimezone().strftime("%b %d %H:%M")
+    except Exception:
+        return str(ts)
+
+
+def build_alarm_history_answer(question):
+    """Operator-facing alarm/event recap over a parsed window. None if not asked."""
+    if not _is_alarm_history_question(question):
+        return None
+    if historian_event_timeline is None or historian_parse_time_range is None:
+        return None
+    try:
+        start, end, label = historian_parse_time_range(question)
+        data = historian_event_timeline(start, end)
+    except Exception as e:
+        print(f"[AI Analyst] Alarm history query failed ({e})")
+        return None
+
+    by_sev = {"CRITICAL": 0, "HIGH": 0, "WARNING": 0, "LOW": 0}
+    anomalies = 0
+    for row in data.get("counts", []) or []:
+        etype = (row.get("event_type") or "").lower()
+        sev = (row.get("severity") or "").upper()
+        cnt = int(_as_float(row.get("count"), 0))
+        if etype == "alert" and sev in by_sev:
+            by_sev[sev] += cnt
+        elif etype == "anomaly_score":
+            anomalies += cnt
+    total_alerts = sum(by_sev.values())
+
+    if total_alerts == 0 and anomalies == 0:
+        return f"No alarms or anomaly events were logged in {label}."
+
+    sev_parts = [f"{n} {name.lower()}" for name, n in by_sev.items() if n]
+    header = f"In {label}: **{total_alerts} alert{'s' if total_alerts != 1 else ''}**"
+    if sev_parts:
+        header += f" ({', '.join(sev_parts)})"
+    if anomalies:
+        header += f" and **{anomalies} anomaly event{'s' if anomalies != 1 else ''}**"
+    header += "."
+
+    lines = [header]
+    recent_alerts = [r for r in (data.get("recent", []) or []) if (r.get("event_type") or "") == "alert"]
+    if recent_alerts:
+        lines.append("Most recent:")
+        for r in recent_alerts[:6]:
+            sev = (r.get("severity") or "?").upper()
+            tag = r.get("tag") or ""
+            msg = (r.get("message") or "").strip()
+            tag_txt = f" {tag}" if tag else ""
+            lines.append(f"- [{_fmt_event_time(r.get('ts'))}] {sev}{tag_txt}: {msg}".rstrip())
+
+    tag_counts = {}
+    for r in recent_alerts:
+        t = r.get("tag")
+        if t:
+            tag_counts[t] = tag_counts.get(t, 0) + 1
+    if tag_counts:
+        worst_tag, worst_n = max(tag_counts.items(), key=lambda kv: kv[1])
+        if worst_n >= 2:
+            lines.append(f"Most frequent tag in the recent list: {worst_tag} (x{worst_n}).")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# LIVE EFFICIENCY-LOSS ATTRIBUTION CHAT ANSWERS  (#3)
+# ============================================================
+def _is_efficiency_loss_question(question):
+    q = (question or "").lower()
+    if _is_forecast_question(q):
+        return False
+    if any(t in q for t in ("yesterday", "last week", "last month", "last shift", "last hour", "ago")):
+        return False  # historical -> handled by the historian path
+    # Phrases that are inherently a loss-attribution ask, no second cue needed.
+    if any(t in q for t in ("heat loss", "stack loss", "excess air", "tube fouling", "fouling loss", "combustion loss")):
+        return True
+    context = any(t in q for t in ("efficiency", "efficient", "heat rate"))
+    loss = any(t in q for t in (
+        "loss", "losing", "lose", "wasting", "waste", "breakdown", "break down",
+        "attribut", "biggest", "where", "coming from", "split", "account", "cost",
+    ))
+    return context and loss
+
+
+def build_efficiency_loss_answer(question, latest_reading):
+    """Deterministic 'where am I losing efficiency' heat-loss split. None if not asked."""
+    if not _is_efficiency_loss_question(question):
+        return None
+    if compute_efficiency_losses is None:
+        return None
+    if not latest_reading:
+        return "No live telemetry has arrived yet, so I can't break down efficiency losses right now."
+    tags = latest_reading.get("tags", {})
+    if tags.get("efficiency") is None:
+        return None
+
+    losses = compute_efficiency_losses(tags)
+    comps = sorted(losses["components"], key=lambda c: c["pct"], reverse=True)
+    eff = losses["efficiency"]
+    base = losses["baseline"]
+    total = losses["total_loss"]
+
+    lines = [
+        f"**Efficiency** is **{eff:.1f}%**, {eff - base:+.1f} pts vs the {base:.0f}% baseline. "
+        f"Accounted heat loss is **{total:.1f}%**, split as:"
+    ]
+    for c in comps:
+        lines.append(f"- {c['name']}: **{c['pct']:.1f}%** — {c['driver']}")
+    top = comps[0]
+    if abs(eff - base) < 3.0:
+        lines.append("Efficiency is essentially at baseline; these are normal operating losses, no action needed.")
+    elif top["pct"] >= 0.1:
+        lines.append(f"Biggest lever: {top['lever']}")
+    else:
+        lines.append("No single dominant loss path right now.")
+    lines.append(f"Effective heat rate is **{losses['heat_rate']:.0f} kJ/kg** (lower is better).")
+    return "\n".join(lines)
+
+
+# ============================================================
+# CONSUMPTION / TOTALIZER CHAT ANSWERS  (#5)
+# ============================================================
+# Flow tags are per-hour rates; totalizing them means integrating flow x dt over a
+# window (the same dt integration the OEE shift stats use for steam mass). This
+# surfaces fuel/steam/feedwater/air totals for "how much fuel did I burn this
+# shift", "total steam produced today", "feedwater consumed since midnight".
+
+_CONSUMPTION_TAGS = {
+    "fuel_flow":      {"label": "Fuel", "unit": "m3"},
+    "steam_flow":     {"label": "Steam", "unit": "kg"},
+    "feedwater_flow": {"label": "Feedwater", "unit": "kg"},
+    "air_flow":       {"label": "Combustion air", "unit": "m3"},
+}
+
+
+def _consumption_tags_in_q(question):
+    """Which flow totals the operator named, in a stable order. Empty if none."""
+    q = (question or "").lower()
+    tags = []
+    if re.search(r"(?<![a-z])(fuel|gas)(?![a-z])", q):
+        tags.append("fuel_flow")
+    if re.search(r"(?<![a-z])steam(?![a-z])", q):
+        tags.append("steam_flow")
+    if "feedwater" in q or "feed water" in q or re.search(r"(?<![a-z])water(?![a-z])", q):
+        tags.append("feedwater_flow")
+    if re.search(r"(?<![a-z])air(?![a-z])", q) or "combustion air" in q:
+        tags.append("air_flow")
+    return list(dict.fromkeys(tags))
+
+
+def _is_consumption_question(question):
+    q = (question or "").lower()
+    if "good steam" in q or "bad steam" in q or "oee" in q:
+        return False  # steam-quality question -> OEE handler, not a totalizer
+    if _is_efficiency_loss_question(question):
+        return False  # "how much is excess air costing" -> efficiency-loss handler
+    verbs = (
+        "how much", "total", "consumed", "consumption", "burn", "burned", "burnt",
+        "used", "usage", "produced", "production", "totaliz", "totalis", "used up",
+    )
+    if not any(v in q for v in verbs):
+        return False
+    if _consumption_tags_in_q(q):
+        return True
+    # Generic "show me the totalizers / consumption" -> report all flows.
+    return "totaliz" in q or "totalis" in q or "consumption" in q
+
+
+def _totalize_flows(rows, tags):
+    """Integrate each flow tag (per-hour rate) over rows into a base-unit total.
+    dt is capped at 5s to bridge sampling gaps, mirroring the OEE shift stats."""
+    totals = {t: 0.0 for t in tags}
+    prev_t = None
+    span_s = 0.0
+    n = 0
+    for r in rows:
+        t = r["ts_epoch"]
+        dt = 1.0 if prev_t is None else max(0.0, min(t - prev_t, 5.0))
+        prev_t = t
+        span_s += dt
+        n += 1
+        row_tags = r.get("tags", {})
+        for tag in tags:
+            v = _as_float(row_tags.get(tag), None)
+            if v is not None and v > 0:
+                totals[tag] += v * dt / 3600.0
+    return totals, span_s / 3600.0, n
+
+
+def _fmt_total(value, unit):
+    if unit == "kg":
+        if value >= 1000.0:
+            return f"{value:,.0f} kg ({value / 1000.0:.2f} t)"
+        return f"{value:,.1f} kg"
+    if unit == "m3":
+        return f"{value:,.1f} m3"
+    return f"{value:,.1f} {unit}"
+
+
+def _has_time_expr(q):
+    if re.search(
+        r"yesterday|today|shift|last\s|past\s|week|month|hour|minute|since|between|"
+        r"from\s|\bago\b|noon|midnight|\d\s*(?:am|pm)|\b\d{1,2}[:/]\d",
+        q,
+    ):
+        return True
+    return bool(re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", q))
+
+
+def _consumption_window(question, now_dt):
+    """Resolve the window for a consumption question. Defaults to the current
+    shift when no time is named — the natural frame for 'how much fuel did I burn'."""
+    q = (question or "").lower()
+    if "since midnight" in q or "so far today" in q or re.search(r"(?<![a-z])today(?![a-z])", q):
+        midnight = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight, now_dt, "today"
+    if any(t in q for t in ("this shift", "current shift", "the shift", "shift so far")):
+        s, e, lbl = current_shift_window(now_dt)
+        return s, min(e, now_dt), lbl
+    if _has_time_expr(q) and historian_parse_time_range is not None:
+        try:
+            return historian_parse_time_range(question)
+        except Exception:
+            pass
+    s, e, lbl = current_shift_window(now_dt)
+    return s, min(e, now_dt), lbl
+
+
+def build_consumption_answer(question):
+    """Totalize fuel/steam/feedwater/air over a window. None if not a totalizer ask."""
+    if not _is_consumption_question(question):
+        return None
+    if fetch_telemetry_window is None:
+        return None
+    tags = _consumption_tags_in_q(question) or list(_CONSUMPTION_TAGS)
+    now_dt = datetime.now().astimezone()
+    start, end, label = _consumption_window(question, now_dt)
+    try:
+        rows = fetch_telemetry_window(start, end)
+    except Exception as e:
+        print(f"[AI Analyst] Consumption query failed ({e})")
+        return None
+    if not rows:
+        return (
+            f"No telemetry is stored for {label}, so I can't total consumption for "
+            f"that window. Pick a shift, date, or time range the historian has data for."
+        )
+
+    totals, hours, n = _totalize_flows(rows, tags)
+    lines = [f"Consumption for {label} ({hours:.1f} h, {n} samples):"]
+    for tag in tags:
+        meta = _CONSUMPTION_TAGS[tag]
+        total = totals[tag]
+        avg_rate = (total / hours) if hours > 0 else 0.0
+        rate_unit = f"{meta['unit']}/hr"
+        lines.append(
+            f"- {meta['label']}: **{_fmt_total(total, meta['unit'])}** "
+            f"(avg {avg_rate:,.1f} {rate_unit})"
+        )
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -1757,6 +2262,7 @@ class AIAnalyst:
     def __init__(self):
         self.telemetry = TelemetryBuffer()
         self.stats = ShiftStats()
+        self.stats_shift_start = current_shift_window(datetime.now().astimezone())[0]
         self.memory = IncidentMemory()  # session incident log for pattern correlation
         self.chat_history = deque(maxlen=6)  # last 3 Q&A pairs for follow-up context
         # Use a unique client ID so a second analyst process or restart does not
@@ -1766,6 +2272,10 @@ class AIAnalyst:
         self.last_diagnosis_time = 0
         self.last_anomaly_score = 0
         self.last_oee_publish = 0
+        # Latest Moirai forecast (published by forecasting_engine over MQTT), used
+        # to answer predictive "when will X reach Y" chat questions.
+        self.latest_forecast = None
+        self.latest_forecast_time = 0.0
 
         # ── Autonomous closed-loop controller state ─────────────────────
         # Deterministic policy (no LLM dependency) so the loop closes reliably.
@@ -1782,7 +2292,8 @@ class AIAnalyst:
             client.subscribe(TOPIC_ALERTS)
             client.subscribe(TOPIC_CHAT_IN)
             client.subscribe(TOPIC_OEE_REQUEST)
-            print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, and chat topics")
+            client.subscribe(TOPIC_FORECAST)
+            print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, chat, and forecast topics")
             # Publish online status
             client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
             # Warm the Ollama prompt cache in the background so the FIRST operator
@@ -1819,6 +2330,10 @@ class AIAnalyst:
             payload = json.loads(msg.payload.decode())
 
             if topic == TOPIC_HEARTBEAT:
+                shift_start, _, _ = current_shift_window(datetime.now().astimezone())
+                if shift_start != self.stats_shift_start:
+                    self.stats = ShiftStats()
+                    self.stats_shift_start = shift_start
                 self.telemetry.add(payload)
                 self.stats.record_reading(payload)
                 self.evaluate_autonomous_control(payload)
@@ -1835,6 +2350,11 @@ class AIAnalyst:
 
             elif topic == TOPIC_OEE_REQUEST:
                 self.handle_oee_history_request(payload)
+
+            elif topic == TOPIC_FORECAST:
+                # Cache the newest forecast so chat can answer "when will X reach Y".
+                self.latest_forecast = payload
+                self.latest_forecast_time = time.time()
 
         except Exception as e:
             print(f"[AI Analyst] Message error: {e}")
@@ -1863,10 +2383,9 @@ class AIAnalyst:
         if now - self.last_oee_publish < 3.0:
             return
         self.last_oee_publish = now
-        shift_start, shift_end, shift_label = current_shift_window(datetime.now().astimezone())
-        stats = self.stats.snapshot()
+        stats, shift_start, shift_end, shift_label, data_source = self._resolve_shift_stats()
         payload = self._oee_snapshot_payload(
-            stats, shift_start, shift_end, shift_label, "in_memory", payload_type="oee_update"
+            stats, shift_start, shift_end, shift_label, data_source, payload_type="oee_update"
         )
         self.mqtt_client.publish(TOPIC_OEE, json.dumps(payload), qos=1)
 
@@ -2450,6 +2969,124 @@ class AIAnalyst:
         ]
         return not any(j in q for j in JAILBREAKS)
 
+    def _publish_chat_answer(self, question, answer, note=""):
+        """Publish a plain-text chat answer, record it in history, and set status."""
+        self.chat_history.append({"role": "user", "content": question})
+        self.chat_history.append({"role": "assistant", "content": answer})
+        self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+            "answer": answer,
+            "timestamp": time.time(),
+        }), qos=1)
+        self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+        if note:
+            print(f"[AI Analyst] {note}: {question[:70]}")
+
+    def build_forecast_answer(self, question):
+        """
+        Predictive "when will X reach Y" answer (#1). Uses the cached Moirai
+        forecast for tube_health / efficiency / steam_pressure when it is fresh;
+        otherwise projects from the recent telemetry trend. Returns a string, or
+        None when the question is not a forecast/ETA request.
+        """
+        if not _is_forecast_question(question):
+            return None
+
+        tag = _find_requested_tag(question)
+        if tag is None:
+            return (
+                "I can project **tube health**, **efficiency**, and **steam pressure** from the live "
+                "forecast, and estimate a trend for other sensors. Which one — and to what value "
+                "(e.g. 'when will tube health reach 70%')?"
+            )
+
+        latest = self.telemetry.latest or {}
+        tags = latest.get("tags", {}) if latest else {}
+        cur = _as_float(tags.get(tag), None)
+        meta = TAG_METADATA.get(tag, {})
+        unit = meta.get("unit", "")
+        dec = meta.get("decimals", 1)
+        label = meta.get("label", tag.replace("_", " "))
+
+        # Threshold + bad-direction: explicit target wins; else the metric default.
+        thr, direction = _FORECAST_DEFAULTS.get(tag, (None, None))
+        exp_thr, exp_dir = _parse_threshold(question)
+        if exp_thr is not None:
+            thr = exp_thr
+        if exp_dir is not None:
+            direction = exp_dir
+        if direction is None:
+            direction = "up" if meta.get("status") == "higher" else "down"
+        if thr is None:
+            return (
+                f"Tell me the target you want the ETA for, e.g. "
+                f"'when will {label.lower()} reach <value> {unit}'.".strip()
+            )
+
+        thr_text = _fmt_value(thr, dec, unit)
+
+        # Already past the threshold?
+        if cur is not None and ((direction == "down" and cur <= thr) or (direction == "up" and cur >= thr)):
+            rel = "at or below" if direction == "down" else "at or above"
+            return f"**{label}** is already **{_fmt_value(cur, dec, unit)}**, {rel} the {thr_text} mark right now."
+
+        fc = self.latest_forecast
+        fresh = fc is not None and (time.time() - self.latest_forecast_time) < 180
+        eta = None
+        extrapolated = False
+        source = None
+        band_txt = ""
+        slope_per_min = None
+
+        if fresh and tag in (fc.get("metrics", {}) or {}):
+            m = fc["metrics"][tag]
+            p10 = m.get("p10") or []
+            p50 = m.get("p50") or []
+            p90 = m.get("p90") or []
+            worst = p10 if direction == "down" else p90
+            for i, v in enumerate(worst):
+                if (direction == "down" and v <= thr) or (direction == "up" and v >= thr):
+                    eta = float(i + 1)
+                    break
+            source = "Moirai forecast (60s horizon)"
+            if p50:
+                if len(p50) >= 2:
+                    slope_per_min = (p50[-1] - p50[0]) / (len(p50) - 1) * 60.0
+                if p10 and p90:
+                    band_txt = (
+                        f" 60s projection {p50[-1]:.{dec}f}{(' ' + unit) if unit else ''} "
+                        f"(range {p10[-1]:.{dec}f}-{p90[-1]:.{dec}f})."
+                    )
+                if eta is None:
+                    eta = _project_eta(p50, thr, direction)
+                    extrapolated = eta is not None
+        else:
+            samples = self.telemetry.get_recent_samples(last_n=60)
+            series = [_as_float(s.get("tags", {}).get(tag), None) for s in samples]
+            series = [v for v in series if v is not None]
+            eta = _project_eta(series, thr, direction)
+            extrapolated = eta is not None
+            source = "recent 60s trend"
+            if len(series) >= 2:
+                slope_per_min = (series[-1] - series[0]) / (len(series) - 1) * 60.0
+
+        cur_text = _fmt_value(cur, dec, unit) if cur is not None else "unavailable"
+        lines = [f"**{label}** is **{cur_text}** now."]
+        if slope_per_min is not None:
+            move = "falling" if slope_per_min < -1e-6 else "rising" if slope_per_min > 1e-6 else "flat"
+            if move == "flat":
+                lines.append(f"Trend is flat ({source}).")
+            else:
+                lines.append(f"Trend is {move} ~{abs(slope_per_min):.{dec}f} {unit}/min ({source}).".replace("  ", " "))
+
+        if eta is not None and eta <= 172800:
+            qualifier = " (extrapolated beyond the 60s model horizon)" if extrapolated else ""
+            lines.append(f"Projected to reach **{thr_text}** in about **{_fmt_duration(eta)}**{qualifier}.")
+        else:
+            lines.append(f"Not trending toward {thr_text} in the near term; no breach projected.")
+        if band_txt:
+            lines.append(band_txt.strip())
+        return "\n".join(lines)
+
     def handle_chat(self, payload):
         """Handle user chat questions — 'Ask the Plant' feature."""
         # Shift report requests arrive on the same topic with a type marker
@@ -2468,6 +3105,19 @@ class AIAnalyst:
         # routing so a report request is never mistaken for a sensor/OEE query.
         if _is_shift_report_request(question):
             window = parse_shift_report_target(question, datetime.now().astimezone())
+            # (None, None, message) -> the requested window is in the future; explain
+            # it instead of generating a report over a window with no telemetry.
+            if window is not None and window[0] is None:
+                message = window[2]
+                print(f"[AI Analyst] Shift report request for a future window: {question[:70]}")
+                self.chat_history.append({"role": "user", "content": question})
+                self.chat_history.append({"role": "assistant", "content": message})
+                self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+                    "answer": message,
+                    "timestamp": time.time(),
+                }), qos=1)
+                self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+                return
             target_label = "the current shift" if window is None else window[2]
             print(f"[AI Analyst] Shift report request via chat -> {target_label}: {question[:70]}")
             self.chat_history.append({"role": "user", "content": question})
@@ -2480,6 +3130,51 @@ class AIAnalyst:
 
         latest_samples = self.telemetry.get_recent_samples(last_n=1)
         latest_reading = latest_samples[-1] if latest_samples else None
+
+        # ── Predictive / forecast answers ("when will tube health hit 70?") ──
+        # Runs before the value router so "when will pressure reach 13 bar" is not
+        # mistaken for a current-value read-out. Keyword-gated, so ordinary
+        # value/why questions fall straight through.
+        try:
+            forecast_answer = self.build_forecast_answer(question)
+        except Exception as e:
+            print(f"[AI Analyst] Forecast answer error: {e}")
+            forecast_answer = None
+        if forecast_answer:
+            self._publish_chat_answer(question, forecast_answer, "Predictive forecast answer")
+            return
+
+        # ── Alarm / event history ("what alarms fired in the last hour?") ──
+        try:
+            alarm_answer = build_alarm_history_answer(question)
+        except Exception as e:
+            print(f"[AI Analyst] Alarm history answer error: {e}")
+            alarm_answer = None
+        if alarm_answer:
+            self._publish_chat_answer(question, alarm_answer, "Alarm history answer")
+            return
+
+        # ── Live efficiency-loss attribution ("where am I losing efficiency?") ──
+        try:
+            eff_loss_answer = build_efficiency_loss_answer(question, latest_reading)
+        except Exception as e:
+            print(f"[AI Analyst] Efficiency-loss answer error: {e}")
+            eff_loss_answer = None
+        if eff_loss_answer:
+            self._publish_chat_answer(question, eff_loss_answer, "Efficiency-loss answer")
+            return
+
+        # ── Consumption / totalizers ("how much fuel did I burn this shift?") ──
+        # Runs before the value router so "how much steam" totalizes over the
+        # window instead of returning the instantaneous steam-flow reading.
+        try:
+            consumption_answer = build_consumption_answer(question)
+        except Exception as e:
+            print(f"[AI Analyst] Consumption answer error: {e}")
+            consumption_answer = None
+        if consumption_answer:
+            self._publish_chat_answer(question, consumption_answer, "Consumption answer")
+            return
 
         # ── Intent routing (LLM-as-classifier, not keyword matching) ──────────
         # Only serve the fast deterministic value read-out when the operator
@@ -2803,7 +3498,53 @@ class AIAnalyst:
             return None, "historian"
 
     def _publish_empty_shift_report(self, shift_start, shift_end, shift_label):
-        """Send a shift-report card explaining that no telemetry exists for the window."""
+        """Send a shift-report card explaining that no telemetry exists for the window.
+
+        When the requested window is empty but the SAME calendar day holds data
+        elsewhere (e.g. an operator asked for the 4pm shift on a day that was only
+        monitored in the morning), we surface the day's real coverage and suggest
+        it, instead of a dead-end "no data" that hides the data that does exist.
+        """
+        summary = (
+            f"No telemetry is stored for {shift_label}, so a shift report cannot be "
+            f"generated for that window. The historian only holds data from periods the "
+            f"plant was being monitored."
+        )
+        highlights = [f"No historian samples found for {shift_label}."]
+        follow_ups = [
+            "Choose a shift or date the historian has data for.",
+            "Or ask for the current shift report.",
+        ]
+
+        # Probe the surrounding calendar day for data outside the empty window.
+        coverage = None
+        if telemetry_coverage is not None:
+            try:
+                day_start = shift_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                day_end = min(day_start + timedelta(days=1), datetime.now().astimezone())
+                if day_end > day_start:
+                    coverage = telemetry_coverage(day_start, day_end)
+            except Exception as e:
+                print(f"[AI Analyst] Coverage probe failed ({e})")
+
+        if coverage:
+            first = coverage["first_local"]
+            last = coverage["last_local"]
+            day_name = shift_start.strftime("%b %d").replace(" 0", " ")
+            summary = (
+                f"No telemetry is stored for {shift_label}. On {day_name} the plant was only "
+                f"monitored between {first:%H:%M} and {last:%H:%M} "
+                f"({coverage['count']} samples), so there is no data for the window you asked about."
+            )
+            highlights = [
+                f"No samples in the requested window ({shift_label}).",
+                f"{day_name} has data only from {first:%H:%M} to {last:%H:%M}.",
+            ]
+            follow_ups = [
+                f"Ask for the {day_name} {first:%H:%M}-{last:%H:%M} window, or the whole {day_name}.",
+                "Or ask for the current shift report.",
+            ]
+
         report = {
             "type": "shift_report",
             "timestamp": time.time(),
@@ -2811,21 +3552,15 @@ class AIAnalyst:
             "shift_start": shift_start.isoformat(),
             "shift_end": shift_end.isoformat(),
             "data_source": "historian",
-            "summary": (
-                f"No telemetry is stored for {shift_label}, so a shift report cannot be "
-                f"generated for that window. The historian only holds data from periods the "
-                f"plant was being monitored."
-            ),
+            "summary": summary,
             "overall_status": "unknown",
-            "highlights": [f"No historian samples found for {shift_label}."],
-            "follow_ups": [
-                "Choose a shift or date the historian has data for.",
-                "Or ask for the current shift report.",
-            ],
+            "highlights": highlights,
+            "follow_ups": follow_ups,
         }
         self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps(report), qos=1)
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
-        print(f"[AI Analyst] Empty shift report published for {shift_label}")
+        print(f"[AI Analyst] Empty shift report published for {shift_label}"
+              f"{' (with day coverage hint)' if coverage else ''}")
 
     def handle_shift_report(self, window=None):
         """

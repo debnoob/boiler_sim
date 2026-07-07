@@ -25,7 +25,7 @@ export default function AiAdvisorPage() {
           </div>
           <div className="card-content">
             <div className="kpi-row">
-              <div><span>Model Path</span><strong>Ollama</strong></div>
+              <div><span>Model</span><strong>Qwen3.5</strong></div>
               <div><span>AI State</span><strong>{aiStatus.toUpperCase()}</strong></div>
               <div><span>Detector</span><strong>Iso. Forest</strong></div>
             </div>

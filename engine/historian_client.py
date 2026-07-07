@@ -305,6 +305,31 @@ def fetch_telemetry_window(
     return rows
 
 
+def telemetry_coverage(
+    start: datetime, end: datetime, db_path: str | None = None
+) -> dict[str, Any] | None:
+    """
+    Lightweight coverage probe for [start, end): how many telemetry samples exist
+    and the first/last sample times (returned as tz-aware LOCAL datetimes), or
+    None when the window holds no samples. Used to turn an empty shift-report into
+    a helpful "data only exists for HH:MM-HH:MM" answer instead of a dead end.
+    """
+    init_db(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts "
+            "FROM telemetry_raw WHERE ts >= ? AND ts < ?",
+            (iso(start), iso(end)),
+        ).fetchone()
+    if not row or not row["n"]:
+        return None
+    return {
+        "count": row["n"],
+        "first_local": parse_timestamp(row["first_ts"]).astimezone(local_tz()),
+        "last_local": parse_timestamp(row["last_ts"]).astimezone(local_tz()),
+    }
+
+
 def count_events_window(
     start: datetime,
     end: datetime,
@@ -584,6 +609,61 @@ def _parse_explicit_date(q: str, current_local: datetime):
     return None
 
 
+def _find_all_explicit_dates(q: str, current_local: datetime):
+    """
+    Return every explicit calendar date mentioned in q as (position, date),
+    ordered by where it appears. Used to detect multi-day ranges like
+    "from july 1 to july 4". Same date grammar as _parse_explicit_date.
+    """
+    today = current_local.date()
+    found = []
+    for m in _DATE_MONTH_DAY.finditer(q):
+        d = _make_date(today.year, _MONTHS[m.group(1)[:3]], int(m.group(2)), today)
+        if d:
+            found.append((m.start(), d))
+    for m in _DATE_DAY_MONTH.finditer(q):
+        d = _make_date(today.year, _MONTHS[m.group(2)[:3]], int(m.group(1)), today)
+        if d:
+            found.append((m.start(), d))
+    for m in _DATE_ISO.finditer(q):
+        d = _make_date(int(m.group(1)), int(m.group(2)), int(m.group(3)), today)
+        if d:
+            found.append((m.start(), d))
+    for m in _DATE_NUMERIC.finditer(q):
+        year = today.year if not m.group(3) else int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
+        d = _make_date(year, int(m.group(2)), int(m.group(1)), today)
+        if d:
+            found.append((m.start(), d))
+    found.sort(key=lambda pos_date: pos_date[0])
+    return found
+
+
+def _parse_explicit_date_range(q: str, current_local: datetime):
+    """
+    Resolve a multi-day calendar date range ("from july 1 to july 4",
+    "july 1 - 4 july", "between 2024-07-01 and 2024-07-04") to (start_date,
+    end_date, label), or None. Requires two distinct dates joined by a range
+    connector, so unrelated mentions ("compare july 1 and july 4 efficiency")
+    are not misread as a span. Dates are returned earliest-first regardless of
+    the order written.
+    """
+    dates = _find_all_explicit_dates(q, current_local)
+    if len(dates) < 2:
+        return None
+    (p1, d1), (p2, d2) = dates[0], dates[1]
+    if d1 == d2:
+        return None
+    connector = q[p1:p2]
+    if not re.search(r"\b(to|through|thru|till|until|and)\b|[-–—]", connector):
+        return None
+    start_date, end_date = sorted((d1, d2))
+    label = (
+        f"{start_date.strftime('%b %d').replace(' 0', ' ')} - "
+        f"{end_date.strftime('%b %d').replace(' 0', ' ')}"
+    )
+    return start_date, end_date, label
+
+
 def _parse_date_anchor(q: str, current_local: datetime):
     """Resolve the calendar day a clock range sits on. Returns (date, label)."""
     today = current_local.date()
@@ -595,10 +675,15 @@ def _parse_date_anchor(q: str, current_local: datetime):
     return today, "today"
 
 
-def _parse_clock_range(q: str, current: datetime):
+def _parse_clock_range(q: str, current: datetime, return_future: bool = False):
     """
     Parse an explicit clock-time range into (start_local, end_local, label), or
     None when the phrase has no two-sided clock range. tz-aware, operator-local.
+
+    return_future=True: when the whole window lies in the future (e.g. "between
+    2pm and 6pm" asked at 10am), return ("future", start_local, end_local, label)
+    with the UNclamped times instead of None, so callers can explain that the
+    window has not happened yet rather than silently doing something else.
     """
     for pattern in _RANGE_PATTERNS:
         m = pattern.search(q)
@@ -630,6 +715,9 @@ def _parse_clock_range(q: str, current: datetime):
             end_local += timedelta(days=1)
 
         now_l = now_local(current)
+        if return_future and start_local >= now_l:  # whole window still in the future
+            label = f"{date_label} {start_local:%H:%M}-{end_local:%H:%M}"
+            return "future", start_local, end_local, label
         end_local = min(end_local, now_l)  # never query into the future
         earliest = now_l - timedelta(days=RETENTION_DAYS)
         start_local = max(start_local, earliest)
@@ -637,6 +725,83 @@ def _parse_clock_range(q: str, current: datetime):
             return None
 
         label = f"{date_label} {start_local:%H:%M}-{end_local:%H:%M}"
+        return start_local, end_local, label
+    return None
+
+
+# One clock time with an unambiguous signal (am/pm, a colon, or noon/midnight),
+# so a bare day number like the "4" in "july 4" is never misread as a time.
+_SINGLE_CLOCK = re.compile(r"\b(noon|midnight|\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm))\b")
+
+
+def _first_clock_time(text: str):
+    """Return (hour, minute, had_meridiem) for the first signalled clock time, or None."""
+    m = _SINGLE_CLOCK.search(text)
+    if not m:
+        return None
+    return _parse_clock_token(m.group(1))
+
+
+def _side_date(text: str, current: datetime):
+    """Resolve the calendar date named in one side of a range, or None."""
+    today = now_local(current).date()
+    if "yesterday" in text:
+        return today - timedelta(days=1)
+    if re.search(r"\btoday\b", text):
+        return today
+    explicit = _parse_explicit_date(text, current)
+    return explicit[0] if explicit else None
+
+
+def _parse_single_clock_time(q: str, current: datetime):
+    """
+    Resolve a single clock time point (not a range) to (hour, minute), or None.
+    Callers pair it with a date anchor to locate the shift that contains it.
+    """
+    t = _first_clock_time(q)
+    if not t:
+        return None
+    return t[0], t[1]
+
+
+_DT_RANGE_SPLITS = (
+    re.compile(r"\bfrom\b(.+?)\bto\b(.+)"),
+    re.compile(r"\bbetween\b(.+?)\band\b(.+)"),
+    re.compile(r"(.+?)\bto\b(.+)"),
+)
+
+
+def _parse_datetime_range(q: str, current: datetime):
+    """
+    Cross-day explicit range where each side carries its own date AND time, e.g.
+    "from july 4th 3pm to july 5th 2am". Returns (start_local, end_local, label)
+    with UNclamped local datetimes, or None. Only fires when both sides have a
+    signalled clock time and the two dates differ — a same-day range is left to
+    _parse_clock_range, and a pure date range to _parse_explicit_date_range.
+    """
+    tz = local_tz()
+    for splitter in _DT_RANGE_SPLITS:
+        m = splitter.search(q)
+        if not m:
+            continue
+        left, right = m.group(1), m.group(2)
+        lt = _first_clock_time(left)
+        rt = _first_clock_time(right)
+        if not lt or not rt:
+            continue
+        ldate = _side_date(left, current)
+        rdate = _side_date(right, current)
+        if ldate is None and rdate is None:
+            continue  # no explicit date -> same-day clock-range handler owns it
+        ldate = ldate or rdate
+        rdate = rdate or ldate
+        if ldate == rdate:
+            continue  # same day -> _parse_clock_range handles it
+        start_local = datetime(ldate.year, ldate.month, ldate.day, lt[0], lt[1], tzinfo=tz)
+        end_local = datetime(rdate.year, rdate.month, rdate.day, rt[0], rt[1], tzinfo=tz)
+        if end_local <= start_local:
+            continue
+        label = f"{start_local:%b %d %H:%M} - {end_local:%b %d %H:%M}"
         return start_local, end_local, label
     return None
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Chart } from 'chart.js/auto';
 import type { ForecastMetric } from '@/types/telemetry';
+import { vizPalette } from '@/lib/vizPalette';
 
 interface Props {
   metric: ForecastMetric | undefined;
@@ -11,13 +12,77 @@ interface Props {
   breachLine?: number;  // optional horizontal threshold
   isLight?: boolean;
   backend?: string;
+  size?: 'compact' | 'hero';
+  subtitle?: string;
 }
 
-export function ForecastChart({ metric, label, color, breachLine, isLight, backend }: Props) {
+function makeChartAreaPlugin(isLightRef: React.MutableRefObject<boolean | undefined>) {
+  return {
+    id: 'forecastChartArea',
+    beforeDatasetsDraw(chart: Chart) {
+      const { ctx, chartArea } = chart;
+      if (!chartArea) return;
+      const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+      if (isLightRef.current) {
+        gradient.addColorStop(0, 'rgba(8,145,178,0.055)');
+        gradient.addColorStop(1, 'rgba(8,145,178,0.00)');
+      } else {
+        gradient.addColorStop(0, 'rgba(56,189,248,0.075)');
+        gradient.addColorStop(1, 'rgba(56,189,248,0.00)');
+      }
+      ctx.save();
+      ctx.fillStyle = gradient;
+      ctx.fillRect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+      ctx.restore();
+    },
+  };
+}
+
+function makeForecastDividerPlugin(
+  boundaryRef: React.MutableRefObject<{ hist: number; total: number }>,
+  showLabelsRef: React.MutableRefObject<boolean>,
+) {
+  return {
+    id: 'forecastDivider',
+    afterDatasetsDraw(chart: Chart) {
+      const { ctx, chartArea, scales } = chart;
+      const { hist, total } = boundaryRef.current;
+      if (!chartArea || !scales.x || hist <= 0 || hist >= total) return;
+      const x = scales.x.getPixelForValue(hist - 0.5);
+      if (!Number.isFinite(x)) return;
+      ctx.save();
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(148,163,184,0.4)';
+      ctx.moveTo(x, chartArea.top);
+      ctx.lineTo(x, chartArea.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (showLabelsRef.current) {
+        ctx.font = '700 9px Inter, system-ui, sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = 'rgba(148,163,184,0.7)';
+        ctx.textAlign = 'right';
+        ctx.fillText('HISTORY', x - 6, chartArea.top + 3);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(56,189,248,0.85)';
+        ctx.fillText('FORECAST', x + 6, chartArea.top + 3);
+      }
+      ctx.restore();
+    },
+  };
+}
+
+export function ForecastChart({ metric, label, color, breachLine, isLight, backend, size = 'compact', subtitle }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef  = useRef<Chart | null>(null);
-  const grid = isLight ? '#e8ddd4' : '#2d3748';
-  const tick = isLight ? '#9c8878' : '#94a3b8';
+  const lightRef = useRef(isLight);
+  const boundaryRef = useRef<{ hist: number; total: number }>({ hist: 0, total: 0 });
+  const showLabelsRef = useRef(size === 'hero');
+  const palette = vizPalette(Boolean(isLight));
+  const grid = palette.grid;
+  const tick = palette.tick;
 
   // Build the colour variants once
   const colorAlpha = (hex: string, a: number) => {
@@ -80,19 +145,22 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
       },
     ];
 
-    const annotations: any = {};
     if (breachLine !== undefined) {
-      annotations['breachLine'] = {
-        type: 'line',
-        yMin: breachLine,
-        yMax: breachLine,
-        borderColor: 'rgba(239,68,68,0.7)',
+      datasets.push({
+        label: `${breachLine} threshold`,
+        data: [],
+        borderColor: 'rgba(239,68,68,0.72)',
+        backgroundColor: 'transparent',
         borderWidth: 1.5,
         borderDash: [4, 4],
-        label: { content: `${breachLine}% threshold`, display: true, position: 'start', color: '#ef4444', font: { size: 9 } },
-      };
+        pointRadius: 0,
+        tension: 0,
+        order: 4,
+      });
     }
 
+    const chartAreaPlugin = makeChartAreaPlugin(lightRef);
+    const dividerPlugin = makeForecastDividerPlugin(boundaryRef, showLabelsRef);
     chartRef.current = new Chart(canvasRef.current, {
       type: 'line',
       data: { labels: [], datasets },
@@ -120,6 +188,7 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
           },
         },
       },
+      plugins: [chartAreaPlugin, dividerPlugin],
     });
 
     return () => { chartRef.current?.destroy(); };
@@ -129,18 +198,19 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
   useEffect(() => {
     const c = chartRef.current;
     if (!c) return;
+    lightRef.current = isLight;
 
     if (!metric) {
       c.data.labels = [];
       c.data.datasets.forEach(ds => { ds.data = []; });
+      boundaryRef.current = { hist: 0, total: 0 };
       c.update('none');
       return;
     }
 
     const histLen  = metric.history.length;
     const foreLen  = metric.p50.length;
-    const totalLen = histLen + foreLen;
-
+    boundaryRef.current = { hist: histLen, total: histLen + foreLen };
     // Labels: empty strings for history, "+1s", "+2s"... for forecast
     const labels = [
       ...Array(histLen).fill(''),
@@ -160,6 +230,9 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
     c.data.datasets[1].data = p90Data;
     c.data.datasets[2].data = p50Data;
     c.data.datasets[3].data = p10Data;
+    if (breachLine !== undefined && c.data.datasets[4]) {
+      c.data.datasets[4].data = Array(histLen + foreLen).fill(breachLine);
+    }
 
     // Theme update
     if (c.options.scales?.y?.grid) (c.options.scales.y.grid as any).color = grid;
@@ -173,7 +246,14 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
   return (
     <div className="inner-card">
       <div className="chart-card-header">
-        <div className="chart-card-title">{label} · Moirai Forecast</div>
+        <div>
+          <div className="chart-card-title">{label} · Moirai Forecast</div>
+          {subtitle && (
+            <div className="mt-1 text-[10.5px] font-medium normal-case tracking-normal" style={{ color: 'var(--tx-secondary)' }}>
+              {subtitle}
+            </div>
+          )}
+        </div>
         {backend && (
           <span
             className={`status-pill ${backend === 'simulation' ? 'warn' : 'ok'}`}
@@ -183,7 +263,7 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
         )}
       </div>
 
-      <div className="relative h-[110px] w-full">
+      <div className={`relative w-full ${size === 'hero' ? 'h-[300px]' : 'h-[130px]'}`}>
         {!hasData && (
           <div className="absolute inset-0 loading-state">
             <span className="loading-dot" />
@@ -209,7 +289,7 @@ export function ForecastChart({ metric, label, color, breachLine, isLight, backe
         </div>
         {breachLine !== undefined && (
           <div className="flex items-center gap-1">
-            <div className="w-5 h-[2px] bg-red-500" />
+            <div className="w-5 h-[2px] bg-red-500" style={{ borderTop: '2px dashed #ef4444' }} />
             <span className="text-red-400">Threshold</span>
           </div>
         )}

@@ -57,7 +57,7 @@ export default function IncidentsPage() {
           <div className="ops-panel-header">
             <div>
               <h2>AI Incident Card</h2>
-              <p>Local Ollama analyst — deterministic detector gated</p>
+              <p>Qwen3.5 analyst — deterministic detector gated</p>
             </div>
             <span className="audit-pill">{latestDiagnosis ? `Updated ${latestDiagnosis.ts}` : 'Standby'}</span>
           </div>

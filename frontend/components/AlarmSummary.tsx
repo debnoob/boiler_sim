@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Check, ShieldCheck } from 'lucide-react';
+import { Check, Clock3, ShieldCheck, Siren } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 
 const SEV_COLOR: Record<string, string> = {
@@ -35,12 +35,12 @@ export function AlarmSummary() {
   const latest = active.slice(0, 3);
 
   return (
-    <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+    <div className="card ov-alarm-feed" style={{ display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
-      <div className="ops-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div className="ov-section-head">
         <div>
           <h2>Active Alarms</h2>
-          <p>Prioritised operational events — acknowledge to clear</p>
+          <p>Prioritised operational events</p>
         </div>
         <span
           className="audit-pill"
@@ -52,9 +52,9 @@ export function AlarmSummary() {
         </span>
       </div>
 
-      <div style={{ padding: '0 1.5rem 1.5rem 1.5rem', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="ov-alarm-body">
         {/* Severity count chips */}
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <div className="ov-alarm-counts">
           {(['CRITICAL', 'HIGH', 'WARNING', 'LOW'] as const).map((sev) => {
             const n = counts[sev] ?? 0;
             const color = sevColor(sev);
@@ -62,22 +62,19 @@ export function AlarmSummary() {
             return (
               <div
                 key={sev}
+                className="ov-alarm-count"
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 7,
-                  padding: '6px 11px', borderRadius: 8,
-                  background: dim ? 'var(--bg-elevated)' : `${color}14`,
-                  border: `1px solid ${dim ? 'var(--bd-inner)' : `${color}44`}`,
+                  ['--alarm-color' as string]: color,
+                  borderColor: dim ? 'var(--bd-inner)' : `${color}44`,
+                  background: dim ? 'var(--bg-elevated)' : `${color}12`,
                   opacity: dim ? 0.55 : 1,
-                  flex: 1, minWidth: 0,
                 }}
               >
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                <span style={{ fontSize: 20, fontWeight: 800, color: dim ? 'var(--tx-muted)' : color, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
-                  {n}
-                </span>
-                <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--tx-muted)' }}>
-                  {sev}
-                </span>
+                <span className="ov-alarm-count-dot" />
+                <div>
+                  <strong>{n}</strong>
+                  <em>{sev}</em>
+                </div>
               </div>
             );
           })}
@@ -85,66 +82,59 @@ export function AlarmSummary() {
 
         {/* Latest alarms list */}
         {latest.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div className="ov-event-list">
+            <div className="ov-event-list-head">
+              <span>Latest events</span>
+              <span>Local time</span>
+            </div>
             {latest.map((a) => {
               const color = sevColor(a.severity);
+              const eventTime = new Date(a.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
               return (
                 <div
                   key={a.id}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '9px 12px', borderRadius: 8,
-                    background: 'var(--bg-elevated)',
-                    border: '1px solid var(--bd-inner)',
-                    borderLeft: `3px solid ${color}`,
-                  }}
+                  className="ov-event-row"
+                  style={{ ['--alarm-color' as string]: color }}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 2 }}>
-                      <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: '0.05em', color, textTransform: 'uppercase' }}>
-                        {a.severity}
-                      </span>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--tx-primary)' }}>{a.tag}</span>
-                      <span style={{ fontSize: 10, color: 'var(--tx-muted)', fontVariantNumeric: 'tabular-nums' }}>
-                        {a.value.toFixed(1)}
-                      </span>
-                    </div>
-                    <p style={{
-                      margin: 0, fontSize: 11, color: 'var(--tx-secondary)', lineHeight: 1.4,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {a.message}
-                    </p>
+                  <div className="ov-event-severity" style={{ background: `${color}16`, borderColor: `${color}44`, color }}>
+                    <Siren size={14} strokeWidth={2.2} />
                   </div>
-                  <span style={{ fontSize: 9.5, color: 'var(--tx-muted)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-                    {new Date(a.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <div className="ov-event-main">
+                    <div className="ov-event-meta">
+                      <span style={{ color }}>{a.severity}</span>
+                      <strong>{a.tag}</strong>
+                      <em>{a.value.toFixed(1)}</em>
+                    </div>
+                    <p>{a.message}</p>
+                  </div>
+                  <span className="ov-event-time">
+                    <Clock3 size={11} strokeWidth={2.1} />
+                    {eventTime}
                   </span>
                   <button
                     onClick={() => acknowledgeAlert(a.id)}
-                    title="Acknowledge"
-                    style={{
-                      flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4,
-                      padding: '4px 9px', borderRadius: 6,
-                      background: 'var(--bg-surface)', border: '1px solid var(--bd-inner)',
-                      color: 'var(--tx-secondary)', fontSize: 10, fontWeight: 700, cursor: 'pointer',
-                    }}
+                    title="Acknowledge alarm"
+                    aria-label={`Acknowledge ${a.severity} alarm for ${a.tag}`}
+                    className="ov-event-ack"
                   >
-                    <Check size={11} strokeWidth={2.5} />
-                    Ack
+                    <Check size={12} strokeWidth={2.5} />
                   </button>
                 </div>
               );
             })}
+            {active.length > latest.length && (
+              <div className="ov-event-more">
+                Showing latest {latest.length} of {active.length} active alarms
+              </div>
+            )}
           </div>
         ) : (
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            padding: '16px', borderRadius: 8,
-            background: 'var(--bg-elevated)', border: '1px solid var(--bd-inner)',
-            color: 'var(--tx-secondary)', fontSize: 12,
-          }}>
-            <ShieldCheck size={18} strokeWidth={2} color="#22c55e" style={{ flexShrink: 0 }} />
-            <span>No active alarms — all systems operating within nominal parameters.</span>
+          <div className="ov-event-empty">
+            <ShieldCheck size={22} strokeWidth={2} color="#22c55e" style={{ flexShrink: 0 }} />
+            <div>
+              <strong>All clear</strong>
+              <span>No active alarms. Systems are operating within nominal parameters.</span>
+            </div>
           </div>
         )}
       </div>

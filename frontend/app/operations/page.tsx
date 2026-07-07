@@ -12,6 +12,7 @@ ChartJS.register(...registerables);
 
 const TOPIC_OEE_REQUEST = 'factory/pumphouse4/boiler/unit01/kpi/oee/request';
 const OEE_TARGET_PCT = 85;
+const STEAM_HOUR_WINDOW = 6;
 
 const STATE_LABELS: Record<string, string> = {
   production: 'Production',
@@ -370,12 +371,21 @@ export default function OperationsPage() {
   const hasData = currentSnap != null;
 
   // ── Steam per Hour chart ──
+  // Show the most recent accumulated hourly buckets as-is. Anchoring a fixed
+  // window to the current wall-clock hour made earlier hours drop out (they
+  // failed the hourKey lookup and rendered as empty bars), so window over the
+  // real series instead — previously produced hours stay visible.
+  const steamHourWindow = useMemo(
+    () => steamHourlySeries.slice(-STEAM_HOUR_WINDOW),
+    [steamHourlySeries],
+  );
+
   const steamHourData = {
-    labels: steamHourlySeries.map((b) => b.label),
+    labels: steamHourWindow.map((b) => b.label),
     datasets: [
       {
         label: 'Steam (kg)',
-        data: steamHourlySeries.map((b) => Math.round(b.kg)),
+        data: steamHourWindow.map((b) => Math.round(b.kg)),
         backgroundColor: (ctx: ScriptableContext<'bar'>) => {
           const area = ctx.chart.chartArea;
           if (!area) return F.thermal;
@@ -385,8 +395,10 @@ export default function OperationsPage() {
           return g;
         },
         hoverBackgroundColor: F.thermal,
-        borderRadius: 5,
-        maxBarThickness: 34,
+        borderRadius: 4,
+        categoryPercentage: 0.86,
+        barPercentage: 0.72,
+        maxBarThickness: 42,
       },
     ],
   };

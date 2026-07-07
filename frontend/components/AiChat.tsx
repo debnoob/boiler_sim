@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Bot, Check, ChevronLeft, ChevronRight, FileText, FlaskConical, RefreshCw, Wrench } from 'lucide-react';
+import { AlertCircle, BookOpen, Check, CheckCircle, ChevronLeft, ChevronRight, Cpu, FileText, FlaskConical, Loader2, RefreshCw, Send, Upload, Wrench } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
 import { formatRich, preprocessMessage } from '@/lib/utils';
@@ -10,7 +10,7 @@ import type { ChatMessage, DiagnosisPayload, AiResponsePayload } from '@/types/t
 const THINKING_STEPS = [
   { label: 'Telemetry', detail: 'Reading last 60s of live sensor data…' },
   { label: 'Correlation', detail: 'Cross-referencing sensor deviations…' },
-  { label: 'Reasoning', detail: 'Local LLM is processing…' },
+  { label: 'Reasoning', detail: 'Qwen3.5 is processing…' },
   { label: 'Drafting', detail: 'Composing response…' },
 ];
 
@@ -185,15 +185,16 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
             <div style={{ position: 'relative', width: 38, height: 38 }}>
               <div style={{ position: 'absolute', inset: 0, borderRadius: 10, background: 'var(--accent)', opacity: 0.18, animation: 'ai-breathe 4.5s ease-in-out infinite' }} />
               <div style={{ position: 'relative', width: 38, height: 38, borderRadius: 10, border: '1.5px solid var(--accent)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-text)' }}>
-                <Bot size={17} strokeWidth={2.2} />
+                <Cpu size={17} strokeWidth={2.2} />
               </div>
             </div>
             <div>
               <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--tx-primary)', letterSpacing: '-0.02em' }}>Nexus AI</div>
               <div className="ai-model-pill" style={{ marginTop: 3 }}>
                 <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
-                <span>Local Ollama analyst</span>
+                <span>Qwen3.5 analyst</span>
               </div>
+              <div className="ai-header-context">Boiler Unit 01 • Live telemetry</div>
             </div>
           </div>
           {/* Status badge */}
@@ -218,9 +219,9 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
         {variant === 'floating' && (
           <div className="ai-live-context" aria-label="Live boiler context">
             <LiveContextItem label="Mode" value={mode} tone={mode === 'NORMAL' ? 'ok' : mode === 'FAULT' ? 'crit' : 'warn'} />
-            <LiveContextItem label="Pressure" value={tags ? `${tags.steam_pressure.toFixed(1)} bar` : '--'} tone={!tags ? 'neutral' : tags.steam_pressure > 13 ? 'crit' : tags.steam_pressure > 12 ? 'warn' : 'ok'} />
-            <LiveContextItem label="Efficiency" value={tags ? `${tags.efficiency.toFixed(1)}%` : '--'} tone={!tags ? 'neutral' : tags.efficiency < 75 ? 'crit' : tags.efficiency < 82 ? 'warn' : 'ok'} />
-            <LiveContextItem label="Anomaly" value={`${anomalyScore}%`} tone={anomalyScore > 70 ? 'crit' : anomalyScore > 30 ? 'warn' : 'ok'} />
+            <LiveContextItem label="PRS" value={tags ? `${tags.steam_pressure.toFixed(1)} bar` : '--'} tone={!tags ? 'neutral' : tags.steam_pressure > 13 ? 'crit' : tags.steam_pressure > 12 ? 'warn' : 'ok'} />
+            <LiveContextItem label="EFF" value={tags ? `${tags.efficiency.toFixed(1)}%` : '--'} tone={!tags ? 'neutral' : tags.efficiency < 75 ? 'crit' : tags.efficiency < 82 ? 'warn' : 'ok'} />
+            <LiveContextItem label="ANOM" value={`${anomalyScore}%`} tone={anomalyScore > 70 ? 'crit' : anomalyScore > 30 ? 'warn' : 'ok'} />
           </div>
         )}
 
@@ -239,7 +240,8 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
               color: 'var(--tx-secondary)', fontSize: 11, fontWeight: 600, letterSpacing: '0.04em',
             }}
           >
-            <span>KNOWLEDGE BASE</span>
+            <BookOpen size={13} />
+            <span>MANUALS</span>
             {kbDocs.length > 0 && (
               <span style={{
                 marginLeft: 4, padding: '1px 6px', borderRadius: 99, fontSize: 10, fontWeight: 700,
@@ -259,7 +261,7 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
                   display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0',
                   borderBottom: '1px solid var(--ai-bubble-bd)',
                 }}>
-                  <span style={{ fontSize: 12, flexShrink: 0 }}>📄</span>
+              <FileText size={13} style={{ flexShrink: 0, color: 'var(--accent-text)' }} />
                   <span style={{ fontSize: 11, color: 'var(--tx-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {doc.filename}
                   </span>
@@ -289,15 +291,15 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
           <div ref={chipsRef} className="flex gap-2 overflow-x-auto hide-scrollbar" onScroll={updateChipsScroll}>
             {[
               ['Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
-              ['Efficiency', 'Why is efficiency trending the way it is? Explain using current sensor values.'],
-              ['OEE', 'Calculate current shift OEE and show availability, thermal performance, and quality factors.'],
+              ['Explain anomaly', 'Explain the latest anomaly using current sensor values and baseline differences.'],
+              ['Compare baseline', 'Compare current live telemetry against normal operating baseline and call out deviations.'],
+              ['OEE status', 'Calculate current shift OEE and show availability, thermal performance, and quality factors.'],
               ['Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
-              ['What-if: drum', 'What if drum level drops to 180mm?'],
-              ['Maintenance priorities', 'What should the maintenance team prioritize this week, in order?'],
+              ['Maintenance priority', 'What should the maintenance team prioritize this week, in order?'],
             ].map(([label, q]) => (
               <button key={label} className="ai-chip" onClick={() => sendQuick(q)}>{label}</button>
             ))}
-            <button className="ai-chip" onClick={sendShiftReport}>Shift report</button>
+            <button className="ai-chip" onClick={sendShiftReport}>Generate shift report</button>
           </div>
         </div>
 
@@ -305,8 +307,8 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
         <div style={{ padding: '8px 14px 12px', background: 'var(--ai-msg-bg)' }}>
           <div className="ai-input-wrap">
             <span style={{ fontSize: 12, color: 'var(--tx-muted)', flexShrink: 0 }}>AI</span>
-            <input
-              type="text"
+            <textarea
+              rows={1}
               placeholder="Ask about the plant…"
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -341,9 +343,11 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
                 transition: 'all 0.2s',
               }}
             >
-              {uploadState === 'uploading' ? '...' : uploadState === 'done' ? 'OK' : uploadState === 'error' ? '!' : '+'}
+              {uploadState === 'uploading' ? <Loader2 size={14} className="spin-icon" /> : uploadState === 'done' ? <CheckCircle size={14} /> : uploadState === 'error' ? <AlertCircle size={14} /> : <Upload size={14} />}
             </button>
-            <button className="ai-send-btn" onClick={sendMessage}>Send</button>
+            <button className="ai-send-btn" onClick={sendMessage} aria-label="Send message" title="Send message">
+              <Send size={15} strokeWidth={2.4} />
+            </button>
           </div>
           {/* Upload status label */}
           {uploadLabel && (
@@ -380,7 +384,7 @@ function LiveContextItem({ label, value, tone }: { label: string; value: string;
 function AiAvatar() {
   return (
     <div className="ai-avatar">
-      <Bot size={14} strokeWidth={2.2} />
+      <Cpu size={14} strokeWidth={2.2} />
     </div>
   );
 }
@@ -413,7 +417,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
     return (
       <div className="flex items-start gap-2 slide-in">
         <AiAvatar />
-        <div className="ai-bubble" style={{ padding: '10px 14px', minWidth: 210 }}>
+        <div className="ai-bubble ai-thinking-card" style={{ padding: '10px 14px', minWidth: 210 }}>
           {/* Reasoning header — like Claude */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24', display: 'inline-block', animation: 'pulseDot 1s ease-in-out infinite' }} />
@@ -556,26 +560,65 @@ function normalizeToString(val: unknown): string {
   return String(val);
 }
 
+function parseNumericValue(value: number | string | undefined): number | null {
+  if (value == null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const match = value.match(/-?\d+(\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+function formatBaselineDelta(value: number | string | undefined, baseline: number | string | undefined): { label: string; percent: number } | null {
+  const current = parseNumericValue(value);
+  const base = parseNumericValue(baseline);
+  if (current == null || base == null || base === 0) return null;
+  const delta = current - base;
+  const percent = (delta / Math.abs(base)) * 100;
+  const sign = delta >= 0 ? '+' : '';
+  return {
+    label: `${sign}${percent.toFixed(1)}% vs baseline`,
+    percent,
+  };
+}
+
 function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount: number; ts: string }) {
   if (!data) return null;
   const severity = (data.severity || 'warning').toLowerCase();
   const badgeBg = SEVERITY_BADGE[severity] || '#f59e0b';
+  const confidence = data.confidence != null ? (data.confidence <= 1 ? data.confidence * 100 : data.confidence) : null;
+  const primarySensor = data.deviated_sensors?.[0];
+  const deviation = primarySensor ? formatBaselineDelta(primarySensor.value, primarySensor.baseline) : null;
 
   return (
-    <div style={{ background: 'var(--bg-surface)', borderRadius: '12px 12px 12px 4px', overflow: 'hidden', border: '1px solid var(--bd-card)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.15)' }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--bd-card)', background: 'var(--bg-elevated)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-          <span style={{ color: '#10b981', fontSize: 14 }}>✓</span>
-          <span style={{ fontWeight: 700, color: 'var(--tx-primary)', fontSize: 13 }}>WO-{woCount} created</span>
+    <div className="ai-incident-card" style={{ ['--incident-color' as string]: badgeBg }}>
+      <div className="ai-incident-rail" />
+      <div className="ai-incident-header">
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
+            <AlertCircle size={14} color={badgeBg} />
+            <span style={{ fontWeight: 800, color: 'var(--tx-primary)', fontSize: 13 }}>Incident card</span>
+            <span className="ai-ref-id">WO-{woCount}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ background: badgeBg, color: '#09090b', fontSize: 9, padding: '2px 8px', borderRadius: 3, fontWeight: 800, textTransform: 'uppercase' }}>{severity}</span>
+            {confidence != null && <span className="ai-card-meta">Confidence {confidence.toFixed(0)}%</span>}
+            <span className="ai-card-meta">Qwen3.5 • {ts}</span>
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ background: badgeBg, color: '#fff', fontSize: 9, padding: '2px 8px', borderRadius: 10, fontWeight: 700, textTransform: 'capitalize' }}>{severity}</span>
-          <span style={{ color: 'var(--tx-muted)', fontSize: 10 }}>AI-generated • {ts}</span>
-        </div>
+        <CheckCircle size={16} color="#4ade80" />
       </div>
-      <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--tx-label)', lineHeight: 1.6 }}>
-        <div style={{ fontWeight: 600, marginBottom: 4, color: 'var(--tx-primary)' }}>{data.probable_cause || 'Boiler Anomaly'}</div>
+      <div style={{ padding: '12px 16px 12px 18px', fontSize: 12, color: 'var(--tx-label)', lineHeight: 1.6 }}>
+        <div style={{ fontWeight: 800, marginBottom: 4, color: 'var(--tx-primary)', fontSize: 13 }}>{data.probable_cause || 'Boiler Anomaly'}</div>
         {data.explanation && <p style={{ color: 'var(--tx-secondary)', marginBottom: 8 }}>{normalizeToString(data.explanation)}</p>}
+        {deviation && (
+          <div className="ai-deviation-strip">
+            <div>
+              <span>Primary deviation</span>
+              <strong>{primarySensor?.sensor || primarySensor?.tag || 'Sensor'}</strong>
+            </div>
+            <div className="ai-deviation-bar"><i style={{ width: `${Math.min(Math.abs(deviation.percent), 100)}%`, background: badgeBg }} /></div>
+            <b style={{ color: badgeBg }}>{deviation.label}</b>
+          </div>
+        )}
         {data.pattern_note && (
           <div style={{ display: 'flex', gap: 8, background: 'var(--pattern-bg)', border: '1px solid var(--pattern-bd)', borderRadius: 8, padding: '8px 10px', marginBottom: 8, fontSize: 11.5, color: 'var(--pattern-tx)', lineHeight: 1.5 }}>
             <span style={{ color: 'var(--pattern-icon)', fontSize: 11, marginTop: 2, flexShrink: 0 }}>↻</span>
@@ -588,8 +631,8 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
               const sev = (s.severity || severity).toLowerCase();
               const sbg = SEVERITY_BADGE[sev] || badgeBg;
               return (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--tx-secondary)', padding: '3px 0' }}>
-                  <span style={{ background: sbg, color: '#fff', fontSize: 9, padding: '2px 6px', borderRadius: 4, fontWeight: 700, textTransform: 'capitalize' }}>{sev}</span>
+                <div key={i} className="ai-sensor-row">
+                  <span style={{ background: sbg, color: '#09090b', fontSize: 9, padding: '2px 6px', borderRadius: 3, fontWeight: 800, textTransform: 'uppercase' }}>{sev}</span>
                   <span style={{ color: 'var(--tx-primary)' }}>{s.sensor || s.tag || 'Unknown'}</span>
                   <span style={{ color: 'var(--tx-muted)' }}>•</span>
                   <span style={{ fontWeight: 600, color: 'var(--tx-primary)' }}>{s.value ?? '--'}</span>
@@ -606,8 +649,8 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
           </div>
         )}
       </div>
-      <div style={{ padding: '8px 16px', background: 'var(--bg-elevated)', borderTop: '1px solid var(--bd-card)', fontSize: 10, color: 'var(--tx-muted)' }}>
-        Assigned: Maintenance Team • Synced to CMMS ✓
+      <div style={{ padding: '8px 16px 8px 18px', background: 'var(--bg-elevated)', borderTop: '1px solid var(--bd-card)', fontSize: 10, color: 'var(--tx-muted)' }}>
+        Assigned: Maintenance Team • Synced to CMMS
       </div>
     </div>
   );

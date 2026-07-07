@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
+import { Activity, Bot, Gauge, Radio, ShieldCheck, TrendingUp, TriangleAlert } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 import { calcRisk, calcDerivedMetrics, formatEta } from '@/lib/utils';
 import { vizPalette, toneColor } from '@/lib/vizPalette';
@@ -52,33 +53,57 @@ function KpiCard({ k, isLight, onClick }: { k: KpiDef; isLight: boolean; onClick
 
   return (
     <div
-      className="card"
-      style={{ padding: 0, overflow: 'hidden', cursor: onClick ? 'pointer' : undefined, transition: 'opacity 0.15s' }}
+      className="card ov-kpi-card"
+      style={{ ['--kpi-accent' as string]: borderColor, cursor: onClick ? 'pointer' : undefined }}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); } : undefined}
     >
-      <div style={{ height: 3, background: borderColor }} />
-      <div style={{ padding: '13px 16px 14px', display: 'flex', flexDirection: 'column', gap: 9 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--tx-muted)' }}>
+      <div className="ov-kpi-rail" />
+      <div className="ov-kpi-content">
+        <div className="ov-kpi-topline">
+          <div className="ov-kpi-label">
             {k.label}
           </div>
-          {onClick && <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--tx-muted)', opacity: 0.6, letterSpacing: '0.04em' }}>↗ INVESTIGATE</span>}
+          <span className={`ov-state-chip ${k.status}`}>{k.status === 'ok' ? 'Normal' : k.status === 'warn' ? 'Watch' : k.status === 'crit' ? 'Limit' : 'Waiting'}</span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-          <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.03em', color: valueColor, fontVariantNumeric: 'tabular-nums', display: 'flex', alignItems: 'baseline', gap: 4 }}>
+        <div className="ov-kpi-value-row">
+          <div className="ov-kpi-value" style={{ color: valueColor }}>
             {valueStr}
-            {valueStr !== '--' && <span style={{ fontSize: 12, fontWeight: 600, opacity: 0.6 }}>{k.unit}</span>}
+            {valueStr !== '--' && <span className="ov-kpi-unit">{k.unit}</span>}
           </div>
           {delta}
         </div>
 
-        <Sparkline data={k.series} color={sparkColor} height={30} />
+        <div className="ov-kpi-spark">
+          <Sparkline data={k.series} color={sparkColor} height={34} />
+        </div>
 
-        <div style={{ fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500 }}>{k.reference}</div>
+        <div className="ov-kpi-ref">{k.reference}</div>
+      </div>
+    </div>
+  );
+}
+
+function SystemTile({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+  label: string;
+  value: string;
+  tone: 'good' | 'warn' | 'bad';
+}) {
+  return (
+    <div className={`ov-system-tile ${tone}`}>
+      <div className="ov-system-icon"><Icon size={15} strokeWidth={2.2} /></div>
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
       </div>
     </div>
   );
@@ -109,13 +134,25 @@ export default function OverviewPage() {
   const efficiencyLoss    = tags ? Math.max(0, 87 - tags.efficiency) : 0;
   const estimatedFuelLoss = tags && derived ? Math.max(0, efficiencyLoss * tags.fuel_flow * 0.12) : 0;
 
-  const statusCards = [
-    { label: 'Connection',     value: mqttStatus.toUpperCase(), tone: mqttStatus === 'connected' ? 'good' : 'bad' },
-    { label: 'Operating Mode', value: mode,                     tone: mode === 'NORMAL' ? 'good' : mode === 'FAULT' ? 'bad' : 'warn' },
-    { label: 'AI Analyst',     value: aiStatus === 'analyzing' ? 'ANALYZING' : 'ONLINE', tone: aiStatus === 'analyzing' ? 'warn' : 'good' },
-    { label: 'Anomaly Score',  value: `${anomalyScore}%`,       tone: anomalyIsAnomaly ? 'bad' : anomalyScore > 55 ? 'warn' : 'good' },
-    { label: 'Failure Risk',   value: `${risk}%`,               tone: risk > 70 ? 'bad' : risk > 40 ? 'warn' : 'good' },
+  const statusCards: Array<{
+    label: string;
+    value: string;
+    tone: 'good' | 'warn' | 'bad';
+    icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
+  }> = [
+    { label: 'MQTT', value: mqttStatus.toUpperCase(), tone: mqttStatus === 'connected' ? 'good' : 'bad', icon: Radio },
+    { label: 'Mode', value: mode, tone: mode === 'NORMAL' ? 'good' : mode === 'FAULT' ? 'bad' : 'warn', icon: Gauge },
+    { label: 'AI', value: aiStatus === 'analyzing' ? 'ANALYZING' : 'ONLINE', tone: aiStatus === 'analyzing' ? 'warn' : 'good', icon: Bot },
+    { label: 'Anomaly', value: `${anomalyScore}%`, tone: anomalyIsAnomaly ? 'bad' : anomalyScore > 55 ? 'warn' : 'good', icon: ShieldCheck },
+    { label: 'Risk', value: `${risk}%`, tone: risk > 70 ? 'bad' : risk > 40 ? 'warn' : 'good', icon: TriangleAlert },
   ];
+
+  const headlineTone = mode === 'FAULT' || anomalyIsAnomaly || risk > 70 ? 'bad' : risk > 40 || aiStatus === 'analyzing' || anomalyScore > 55 ? 'warn' : 'good';
+  const headline = headlineTone === 'bad'
+    ? 'Boiler Unit 01 requires operator attention'
+    : headlineTone === 'warn'
+      ? 'Boiler Unit 01 operating with elevated watch conditions'
+      : 'Boiler Unit 01 nominal - no breach projected';
 
   const kpiCards: KpiDef[] = [
     {
@@ -148,78 +185,118 @@ export default function OverviewPage() {
   ];
 
   return (
-    <div className="page-body">
+    <div className="page-body overview-page">
 
-      {/* Status strip */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 10 }}>
-        {statusCards.map(c => (
-          <div key={c.label} style={{
-            background: 'var(--bg-surface)', border: '1px solid var(--bd-card)',
-            borderRadius: 10, padding: '14px 16px',
-            display: 'flex', flexDirection: 'column', gap: 6, position: 'relative', overflow: 'hidden',
-          }}>
-            <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--tx-muted)' }}>
-              {c.label}
-            </span>
-            <strong style={{ fontSize: 18, fontWeight: 800, color: toneColor(c.tone, isLight), fontVariantNumeric: 'tabular-nums' }}>
-              {c.value}
-            </strong>
-            <span style={{ position: 'absolute', top: 14, right: 14, width: 8, height: 8, borderRadius: '50%', background: toneColor(c.tone, isLight), opacity: 0.85 }} />
+      {/* Operational headline */}
+      <div className={`ov-headline ${headlineTone}`}>
+        <div className="ov-headline-main">
+          <span className="ov-live-dot" style={{ background: toneColor(headlineTone, isLight), boxShadow: `0 0 12px ${toneColor(headlineTone, isLight)}66` }} />
+          <div>
+            <h2>{headline}</h2>
+            <p>
+              Mode {mode} · AI {aiStatus === 'analyzing' ? 'analyzing' : 'online'} · anomaly {anomalyScore}% · risk {risk}%
+            </p>
           </div>
-        ))}
+        </div>
+        <div className="ov-headline-kpis">
+          <div><span>Pressure</span><strong>{tags ? `${tags.steam_pressure.toFixed(1)} bar` : '--'}</strong></div>
+          <div><span>Efficiency</span><strong>{tags ? `${tags.efficiency.toFixed(1)}%` : '--'}</strong></div>
+          <div><span>ETA</span><strong>{etaText}</strong></div>
+        </div>
       </div>
 
       {/* KPI cards with sparklines + deltas */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+      <div className="ov-kpi-row">
         {kpiCards.map(k => <KpiCard key={k.label} k={k} isLight={isLight} onClick={() => router.push('/predictive')} />)}
       </div>
 
-      {/* Health headline trend strip */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--tx-muted)', paddingLeft: 2 }}>
-          Health Signals · last 60s
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 16 }}>
-          <TrendTile label="Efficiency" unit="%" color={pal.status.good}
-            value={tags ? tags.efficiency.toFixed(1) : '--'} data={kpiSeries.datasets[2]} />
-          <TrendTile label="Failure Risk" unit="%" color={pal.status.crit}
-            value={`${risk}`} data={riskSeries.datasets[0]} />
-          <TrendTile label="Anomaly Score" unit="%" color={pal.factor.quality}
-            value={`${anomalyScore}`} data={anomalySeries.datasets[0]} />
-        </div>
+      {/* Command summary band */}
+      <div className="ov-command-grid">
+        <section className="card ov-system-panel">
+          <div className="ov-section-head">
+            <div>
+              <h2>System Matrix</h2>
+              <p>Live state and controls</p>
+            </div>
+          </div>
+          <div className="ov-system-grid">
+            {statusCards.map(c => (
+              <SystemTile key={c.label} icon={c.icon} label={c.label} value={c.value} tone={c.tone} />
+            ))}
+          </div>
+        </section>
+
+        <section className="card ov-trend-panel">
+          <div className="ov-section-head">
+            <div>
+              <h2>Health Signals</h2>
+              <p>Last 60 seconds</p>
+            </div>
+            <span className="audit-pill">Live</span>
+          </div>
+          <div className="ov-trend-grid">
+            <TrendTile label="Efficiency" unit="%" color={pal.status.good}
+              value={tags ? tags.efficiency.toFixed(1) : '--'} data={kpiSeries.datasets[2]} />
+            <TrendTile label="Failure Risk" unit="%" color={pal.status.crit}
+              value={`${risk}`} data={riskSeries.datasets[0]} />
+            <TrendTile label="Anomaly Score" unit="%" color={pal.factor.quality}
+              value={`${anomalyScore}`} data={anomalySeries.datasets[0]} />
+          </div>
+        </section>
       </div>
 
-      {/* Active alarms */}
+      {/* Active alarms as event feed */}
       <AlarmSummary />
 
       {/* Reliability + Efficiency */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div className="card">
-          <div className="card-header">
-            <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--tx-primary)', margin: 0 }}>Reliability Runway</h2>
-            <p style={{ fontSize: 12, color: 'var(--tx-secondary)', marginTop: 3, marginBottom: 0 }}>
-              {moiraiForecast ? `Forecast: ${moiraiForecast.backend}` : 'Hybrid trend projection'}
-            </p>
+      <div className="ov-lower-grid">
+        <div className="card ov-runway-panel">
+          <div className="ov-section-head">
+            <div>
+              <h2>Reliability Runway</h2>
+              <p>{moiraiForecast ? `Forecast: ${moiraiForecast.backend}` : 'Hybrid trend projection'}</p>
+            </div>
+            <Activity size={17} color="var(--tx-secondary)" />
           </div>
-          <div className="card-content">
-            <div className="kpi-row">
+          <div className="ov-runway-content">
+            <div className="ov-runway-metrics">
               <div><span>Tube Health</span><strong>{tags ? `${tags.tube_health.toFixed(1)}%` : '--'}</strong></div>
               <div><span>Threshold ETA</span><strong>{etaText}</strong></div>
               <div><span>Health Slope</span><strong>{`${healthDelta.toFixed(2)} pts`}</strong></div>
             </div>
+            <div className="ov-runway-track" aria-hidden="true">
+              <span className="ov-runway-fill" style={{ width: `${Math.max(0, Math.min(100, latestHealth ?? 0))}%` }} />
+              <i style={{ left: '70%' }}><b>Inspect</b></i>
+              <i style={{ left: '40%' }}><b>Watch</b></i>
+            </div>
+            <div className="ov-runway-labels">
+              <span>Critical</span>
+              <span>Inspection threshold</span>
+              <span>Nominal</span>
+            </div>
           </div>
         </div>
 
-        <div className="card">
-          <div className="card-header">
-            <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--tx-primary)', margin: 0 }}>Efficiency Impact</h2>
-            <p style={{ fontSize: 12, color: 'var(--tx-secondary)', marginTop: 3, marginBottom: 0 }}>Energy and emissions snapshot</p>
+        <div className="card ov-efficiency-panel">
+          <div className="ov-section-head">
+            <div>
+              <h2>Efficiency Impact</h2>
+              <p>Energy and fuel snapshot</p>
+            </div>
+            <TrendingUp size={17} color="var(--tx-secondary)" />
           </div>
-          <div className="card-content">
-            <div className="kpi-row">
+          <div className="ov-efficiency-content">
+            <div className="ov-eff-ring" style={{ ['--eff-angle' as string]: `${Math.max(0, Math.min(100, tags?.efficiency ?? 0)) * 3.6}deg` }}>
+              <div>
+                <strong>{tags ? tags.efficiency.toFixed(1) : '--'}</strong>
+                <span>%</span>
+              </div>
+            </div>
+            <div className="ov-impact-table">
               <div><span>Heat Rate</span><strong>{tags ? tags.heat_rate.toFixed(0) : '--'}</strong></div>
               <div><span>Recoverable Eff.</span><strong>{`${efficiencyLoss.toFixed(1)}%`}</strong></div>
-              <div><span>Fuel Loss Est.</span><strong>{`${estimatedFuelLoss.toFixed(1)} m³/hr`}</strong></div>
+              <div><span>Fuel Loss Est.</span><strong>{`${estimatedFuelLoss.toFixed(1)} m3/hr`}</strong></div>
+              <div><span>Steam/Fuel</span><strong>{derived ? `${derived.steamToFuel.toFixed(2)} kg/m3` : '--'}</strong></div>
             </div>
           </div>
         </div>
