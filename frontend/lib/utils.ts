@@ -194,3 +194,30 @@ export function formatRich(text: string): string {
 
   return html;
 }
+
+/**
+ * Coerce an AI payload field (recommended_action, steps, etc.) into a display
+ * string. The analyst sometimes emits a plain string, sometimes an array of
+ * action objects — a raw String() on the latter yields "[object Object]", so
+ * this walks arrays/objects and pulls the common text-carrying keys.
+ */
+export function normalizeToString(val: unknown): string {
+  if (val == null) return '';
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (Array.isArray(val)) {
+    return val.map((item, i) => `${i + 1}. ${normalizeToString(item)}`).join('\n');
+  }
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>;
+    const text = obj.action ?? obj.step ?? obj.description ?? obj.text ?? obj.message ?? obj.recommendation;
+    if (text != null) {
+      const extras: string[] = [];
+      if (obj.urgency) extras.push(`Urgency: ${normalizeToString(obj.urgency)}`);
+      if (obj.timing) extras.push(`Timing: ${normalizeToString(obj.timing)}`);
+      return extras.length ? `${normalizeToString(text)} (${extras.join(', ')})` : normalizeToString(text);
+    }
+    return JSON.stringify(val);
+  }
+  return String(val);
+}

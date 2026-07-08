@@ -1,0 +1,17 @@
+{
+  "repoRoot": "/Users/jethwakeval/Downloads/nexus-os-demo",
+  "cwd": "/Users/jethwakeval/Downloads/nexus-os-demo/frontend",
+  "stack": {
+    "frameworks": [],
+    "componentLibraries": [],
+    "styling": [],
+    "componentDirectories": [],
+    "packageFiles": []
+  },
+  "routes": [],
+  "tokens": {
+    "sources": [],
+    "tokens": []
+  },
+  "summary": "Repo root: /Users/jethwakeval/Downloads/nexus-os-demo\nWorking directory: /Users/jethwakeval/Downloads/nexus-os-demo/frontend\nFrameworks: none detected\nStyling: none detected\nComponent libraries: none detected\nRoute roots: none detected\nRoute candidates: none detected\nComponent directories: none detected\nToken sources: none detected\nVisible design language hints: no strong hints detected"
+}

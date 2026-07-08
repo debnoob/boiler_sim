@@ -3,41 +3,83 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Box, LayoutDashboard, Gauge, TrendingUp, AlertTriangle, Sliders, FileText, Menu, ArrowLeft } from 'lucide-react';
+import {
+  AlertTriangle,
+  Box,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  Gauge,
+  LayoutDashboard,
+  Moon,
+  Sliders,
+  TrendingUp,
+  UserCircle2,
+  type LucideIcon,
+} from 'lucide-react';
 import { ChatWidget } from './ChatWidget';
 import { useNexusStore } from '@/lib/store';
 // import { exportToPowerBI } from '@/lib/exportToPowerBI';
 
-const NAV = [
-  { href: '/',           label: 'Overview',                icon: LayoutDashboard },
-  { href: '/operations', label: 'Operations',              icon: Gauge },
-  { href: '/predictive', label: 'Predictive Intelligence', icon: TrendingUp },
-  { href: '/incidents',  label: 'Incidents & Alarms',      icon: AlertTriangle },
-  { href: '/controls',   label: 'Controls',                icon: Sliders },
-  { href: '/reports',    label: 'Reports',                 icon: FileText },
-] as const;
+type NavItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+};
+
+type NavGroup = {
+  label: string;
+  items: NavItem[];
+};
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: 'Command',
+    items: [
+      { href: '/', label: 'Overview', icon: LayoutDashboard },
+      { href: '/operations', label: 'Operations', icon: Gauge },
+    ],
+  },
+  {
+    label: 'Intelligence',
+    items: [
+      { href: '/predictive', label: 'Predictive Intelligence', icon: TrendingUp },
+      { href: '/incidents', label: 'Incidents & Alarms', icon: AlertTriangle },
+      { href: '/controls', label: 'Controls', icon: Sliders },
+    ],
+  },
+  {
+    label: 'Records',
+    items: [
+      { href: '/reports', label: 'Reports', icon: FileText },
+    ],
+  },
+];
+
+const NAV = NAV_GROUPS.flatMap((group) => group.items);
 
 const PAGE_TITLES: Record<string, string> = {
-  '/':           'Overview',
+  '/': 'Overview',
   '/operations': 'Operations',
   '/predictive': 'Predictive Intelligence',
-  '/incidents':  'Incidents & Alarms',
-  '/controls':   'Controls',
-  '/reports':    'Reports',
+  '/incidents': 'Incidents & Alarms',
+  '/controls': 'Controls',
+  '/reports': 'Reports',
 };
 
 const MODE_COLORS: Record<string, string> = {
-  NORMAL: '#22c55e', DEGRADING: '#fbbf24', CRITICAL: '#f97316', FAULT: '#ef4444',
+  NORMAL: '#22c55e',
+  DEGRADING: '#fbbf24',
+  CRITICAL: '#f97316',
+  FAULT: '#ef4444',
 };
-
-const SIDEBAR_W = 220;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { mqttStatus, mode, alerts, tags, toggleTheme } = useNexusStore();
+  const { mqttStatus, mode, alerts, toggleTheme, msgCount } = useNexusStore();
   const [clock, setClock] = useState('');
-  const [hovered, setHovered] = useState<string | null>(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     const tick = () => setClock(new Date().toLocaleTimeString());
@@ -46,157 +88,124 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => clearInterval(id);
   }, []);
 
-  const criticalCount = alerts.filter(a => a.severity === 'CRITICAL' || a.severity === 'HIGH').length;
+  const criticalCount = alerts.filter((a) => a.severity === 'CRITICAL' || a.severity === 'HIGH').length;
   const modeColor = MODE_COLORS[mode] ?? '#22c55e';
   const connected = mqttStatus === 'connected';
-  const pageTitle = PAGE_TITLES[pathname] ?? 'Overview';
+  const pageTitle = PAGE_TITLES[pathname] ?? NAV.find((item) => pathname.startsWith(item.href))?.label ?? 'Overview';
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg-base)' }}>
-
-      {/* ── Sidebar ─────────────────────────────────────────── */}
-      <aside style={{
-        width: SIDEBAR_W,
-        flexShrink: 0,
-        position: 'fixed',
-        top: 0, bottom: 0, left: 0,
-        zIndex: 50,
-        display: 'flex',
-        flexDirection: 'column',
-        background: 'var(--bg-surface)',
-        borderRight: '1px solid var(--bd-card)',
-        overflowY: 'auto',
-        transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
-        transition: 'transform 0.3s ease',
-      }}>
-        {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 16px 14px', borderBottom: '1px solid var(--bd-inner)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <img src="/logo.png" alt="Nx" style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'contain', flexShrink: 0 }} />
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--accent-text)', letterSpacing: '-0.02em' }}>NEXUS OS</div>
-              <div style={{ fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginTop: 1 }}>Boiler Intelligence</div>
+    <div className={`app-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      <aside className={`app-sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="app-sidebar-logo">
+          <div className="app-brand-lockup">
+            <img src="/logo.png" alt="Nexus OS" className="app-logo-image" />
+            <div className="app-logo-copy">
+              <div className="app-logo-title">NEXUS OS</div>
+              <div className="app-logo-sub">Boiler Intelligence</div>
             </div>
           </div>
-          <button 
-            onClick={() => setIsSidebarOpen(false)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tx-secondary)', display: 'flex', padding: 4, borderRadius: 4 }}
-            onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
-            onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
+          <button
+            className="sidebar-icon-button"
+            onClick={() => setIsSidebarCollapsed((v) => !v)}
+            aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <ArrowLeft size={18} />
+            {isSidebarCollapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
           </button>
         </div>
 
-        {/* Nav */}
-        <nav style={{ padding: '10px 8px', flex: 1 }}>
-          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--tx-muted)', padding: '4px 10px 8px' }}>
-            Operations
-          </div>
-          {NAV.map(({ href, label, icon: Icon }) => {
-            const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
-            const isHov = hovered === href;
-            const badge = href === '/incidents' && criticalCount > 0 ? criticalCount : null;
-            return (
-              <Link
-                key={href}
-                href={href}
-                onMouseEnter={() => setHovered(href)}
-                onMouseLeave={() => setHovered(null)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 9,
-                  padding: '8px 10px', borderRadius: 7,
-                  fontSize: 13, fontWeight: 600,
-                  color: active ? 'var(--accent-text)' : isHov ? 'var(--tx-primary)' : 'var(--tx-secondary)',
-                  textDecoration: 'none', marginBottom: 1,
-                  background: active ? 'var(--accent-muted)' : isHov ? 'var(--bg-elevated)' : 'transparent',
-                  border: `1px solid ${active ? 'var(--accent-border)' : 'transparent'}`,
-                  transition: 'all 0.12s',
-                }}
-              >
-                <Icon size={15} strokeWidth={2} style={{ flexShrink: 0 }} />
-                <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
-                {badge != null && (
-                  <span style={{
-                    minWidth: 18, height: 18, padding: '0 5px', borderRadius: 99,
-                    background: '#ef4444', color: '#fff',
-                    fontSize: 9, fontWeight: 800,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>{badge}</span>
-                )}
-              </Link>
-            );
-          })}
+        <nav className="app-nav" aria-label="Primary navigation">
+          {NAV_GROUPS.map((group) => (
+            <div className="app-nav-group" key={group.label}>
+              <div className="app-nav-section-label">{group.label}</div>
+              {group.items.map(({ href, label, icon: Icon }) => {
+                const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
+                const badge = href === '/incidents' && criticalCount > 0 ? criticalCount : null;
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    className={`app-nav-item ${active ? 'active' : ''}`}
+                    title={isSidebarCollapsed ? label : undefined}
+                    aria-current={active ? 'page' : undefined}
+                  >
+                    <Icon size={17} strokeWidth={2.1} className="app-nav-icon" />
+                    <span>{label}</span>
+                    {badge != null && <strong className="app-nav-badge">{badge}</strong>}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
-        {/* Asset context */}
-        <div style={{ padding: '12px 8px', borderTop: '1px solid var(--bd-inner)' }}>
-          <div style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--tx-muted)', padding: '4px 10px 8px' }}>
-            Asset Context
-          </div>
-          <div style={{ fontSize: 11.5, padding: '3px 10px', color: 'var(--tx-label)', fontWeight: 700 }}>Nexus Demo Plant</div>
-          <div style={{ fontSize: 11.5, padding: '3px 20px', color: 'var(--tx-secondary)' }}>Pumphouse 4</div>
-          <div style={{ fontSize: 11.5, padding: '5px 10px', color: 'var(--accent-text)', fontWeight: 700, background: 'var(--accent-muted)', borderRadius: 6, margin: '2px 4px', border: '1px solid var(--accent-border)' }}>
-            <Box size={13} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 5 }} />
-            Boiler Unit 01
-          </div>
+        <div className="app-sidebar-asset">
+          <div className="app-nav-section-label">Asset Context</div>
+          <button className="app-asset-card" title="Boiler Unit 01 asset context">
+            <span className="asset-status-dot" style={{ background: modeColor, boxShadow: `0 0 8px ${modeColor}66` }} />
+            <Box size={16} strokeWidth={2.1} className="asset-card-icon" />
+            <span className="asset-card-copy">
+              <strong>Boiler Unit 01</strong>
+              <em>Nexus Demo Plant / Pumphouse 4</em>
+            </span>
+            <ChevronDown size={15} strokeWidth={2.1} className="asset-card-chevron" />
+          </button>
         </div>
 
-        {/* Footer */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '10px 16px', borderTop: '1px solid var(--bd-inner)', fontSize: 10, fontWeight: 600, color: 'var(--tx-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0, background: connected ? '#22c55e' : '#ef4444', boxShadow: connected ? '0 0 6px #22c55e88' : 'none' }} />
-          <span>MQTT {mqttStatus.toUpperCase()}</span>
+        <div className="app-sidebar-footer">
+          <div className="sidebar-health-card">
+            <div>
+              <span>MQTT</span>
+              <strong className={connected ? 'health-ok' : 'health-bad'}>
+                <i className={`sidebar-mqtt-dot ${connected ? 'conn' : 'disc'}`} />
+                {mqttStatus}
+              </strong>
+            </div>
+            <div>
+              <span>Mode</span>
+              <strong style={{ color: modeColor }}>{mode}</strong>
+            </div>
+            <div>
+              <span>Messages</span>
+              <strong>{msgCount}</strong>
+            </div>
+          </div>
+
+          <div className="sidebar-footer-controls">
+            <button className="sidebar-theme-button" onClick={toggleTheme} aria-label="Toggle theme" title="Toggle theme">
+              <Moon size={14} strokeWidth={2.1} />
+              <span>Theme</span>
+              <span className="theme-toggle" aria-hidden="true" />
+            </button>
+            <div className="sidebar-operator">
+              <UserCircle2 size={20} strokeWidth={1.9} />
+              <div>
+                <strong>Operator</strong>
+                <span>Control room</span>
+              </div>
+            </div>
+          </div>
         </div>
       </aside>
 
-      {/* ── Main ─────────────────────────────────────────────── */}
-      <div style={{
-        marginLeft: isSidebarOpen ? SIDEBAR_W : 0,
-        width: isSidebarOpen ? `calc(100% - ${SIDEBAR_W}px)` : '100%',
-        transition: 'margin-left 0.3s ease, width 0.3s ease',
-        display: 'flex', flexDirection: 'column', minHeight: '100vh',
-        minWidth: 0,
-      }}>
-
-        {/* Top bar */}
-        <header style={{
-          position: 'sticky', top: 0, zIndex: 40,
-          height: 56, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '0 24px', gap: 16,
-          background: 'var(--bg-surface)',
-          borderBottom: '1px solid var(--bd-card)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16, minWidth: 0 }}>
-            {!isSidebarOpen && (
-              <button 
-                onClick={() => setIsSidebarOpen(true)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tx-primary)', display: 'flex', padding: 4, borderRadius: 4 }}
-                onMouseEnter={(e) => e.currentTarget.style.background = 'var(--bg-elevated)'}
-                onMouseLeave={(e) => e.currentTarget.style.background = 'none'}
-              >
-                <Menu size={20} />
-              </button>
-            )}
-            <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--tx-muted)', fontWeight: 500, marginBottom: 2 }}>
+      <div className="app-main">
+        <header className="app-topbar">
+          <div className="app-topbar-left">
+            <div className="app-breadcrumb">
               <span>Nexus Demo Plant</span>
-              <span style={{ opacity: 0.4 }}>/</span>
+              <span>/</span>
               <span>Pumphouse 4</span>
-              <span style={{ opacity: 0.4 }}>/</span>
-              <span style={{ color: 'var(--tx-secondary)', fontWeight: 700 }}>BOILER-01</span>
+              <span>/</span>
+              <strong>BOILER-01</strong>
             </div>
-            <h1 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: 'var(--tx-primary)', letterSpacing: '-0.02em' }}>
-              {pageTitle}
-            </h1>
+            <h1>{pageTitle}</h1>
           </div>
-        </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
-            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: '0.06em', padding: '3px 10px', borderRadius: 99, border: `1px solid ${modeColor}55`, color: modeColor, textTransform: 'uppercase' }}>
+          <div className="app-topbar-right">
+            <span className="mode-pill" style={{ borderColor: `${modeColor}55`, color: modeColor }}>
               {mode}
             </span>
-            <span style={{ fontSize: 11, color: 'var(--tx-muted)', fontVariantNumeric: 'tabular-nums' }}>{clock}</span>
+            <span className="app-clock">{clock}</span>
             {/* <button
               disabled={!tags}
               onClick={() => exportToPowerBI(useNexusStore.getState())}
@@ -204,21 +213,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               ↓ Power BI
             </button> */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 11, color: 'var(--tx-muted)' }}>🌙</span>
-              <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme" />
-              <span style={{ fontSize: 11, color: 'var(--tx-muted)' }}>☀️</span>
-            </div>
           </div>
         </header>
 
-        {/* Page content */}
-        <main style={{ flex: 1, overflowY: 'auto', padding: 24, background: 'var(--bg-base)' }}>
+        <main className="app-content">
           {children}
         </main>
       </div>
 
-      {/* Floating AI chat widget — always visible */}
       <ChatWidget />
     </div>
   );

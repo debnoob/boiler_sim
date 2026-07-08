@@ -92,6 +92,13 @@ services:
       - RAG_SERVER_URL=http://rag-server:8001
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=nexus-analyst:latest
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_ROUTER_MODEL=${GROQ_ROUTER_MODEL:-qwen/qwen3.6-27b}
+      - GROQ_CRITIC_MODEL=${GROQ_CRITIC_MODEL:-qwen/qwen3.6-27b}
+      - GROQ_CRITIC_TEMPERATURE=${GROQ_CRITIC_TEMPERATURE:-0.1}
+      - AI_LEARNING_DB_PATH=/app/historian/ai_learning_memory.db
+    volumes:
+      - historian-data:/app/historian
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

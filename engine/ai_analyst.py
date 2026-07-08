@@ -11,6 +11,7 @@ import paho.mqtt.client as mqtt
 import json
 import os
 import re
+import sqlite3
 import time
 import uuid
 import requests
@@ -121,9 +122,24 @@ OLLAMA_THINK    = os.environ.get("OLLAMA_THINK", "false").strip().lower() in ("1
 
 # Groq is used only for lightweight routing/classification decisions. Final
 # operator answers still come from the local Ollama model.
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_ROUTER_MODEL = os.environ.get("GROQ_ROUTER_MODEL", "qwen/qwen3.6-27b")
+GROQ_CRITIC_MODEL = os.environ.get("GROQ_CRITIC_MODEL", GROQ_ROUTER_MODEL)
+GROQ_CRITIC_TEMPERATURE = _env_float("GROQ_CRITIC_TEMPERATURE", 0.1)
 GROQ_CHAT_URL = os.environ.get("GROQ_CHAT_URL", "https://api.groq.com/openai/v1/chat/completions")
+
+_HISTORIAN_DB_DIR = os.path.dirname(os.environ.get("HISTORIAN_DB_PATH", "")) or "historian"
+AI_LEARNING_DB_PATH = os.environ.get(
+    "AI_LEARNING_DB_PATH",
+    os.path.join(_HISTORIAN_DB_DIR, "ai_learning_memory.db"),
+)
 
 # MQTT Topics
 TOPIC_HEARTBEAT = "factory/pumphouse4/boiler/unit01/system/heartbeat"
@@ -131,6 +147,7 @@ TOPIC_ANOMALY = "factory/pumphouse4/boiler/unit01/ai/anomaly_score"
 TOPIC_ALERTS = "factory/pumphouse4/boiler/unit01/alerts"
 TOPIC_CHAT_IN = "factory/pumphouse4/boiler/unit01/ai/question"
 TOPIC_CHAT_OUT = "factory/pumphouse4/boiler/unit01/ai/response"
+TOPIC_FEEDBACK = "factory/pumphouse4/boiler/unit01/ai/feedback"
 TOPIC_DIAGNOSIS = "factory/pumphouse4/boiler/unit01/ai/diagnosis"
 TOPIC_AI_STATUS = "factory/pumphouse4/boiler/unit01/ai/status"
 TOPIC_FORECAST = "factory/pumphouse4/boiler/unit01/ai/forecast"
@@ -521,32 +538,135 @@ def _fmt_span(stats, unit, decimals=2):
     )
 
 
+def _loop_response_verdict(samples, pv_tag, out_tag, setpoint, loop_key, pid_issues,
+                           pv_unit, out_unit, rel_tol=0.03):
+    """
+    Deterministic verdict on whether an actuator (out_tag) is tracking its
+    controlled variable (pv_tag) correctly. Answers the operator's real question
+    ("is the damper responding to the O2 PID?") instead of leaving the LLM to
+    guess. Correct response = output moves to counter the PV error, so output
+    should correlate POSITIVELY with error = (setpoint - PV) for all three loops
+    (low PV -> more output). Returns a one-line verdict string, or None if the
+    window is too short.
+    """
+    pv, out = [], []
+    for s in samples:
+        t = s.get("tags", {})
+        if pv_tag in t and out_tag in t:
+            try:
+                pv.append(float(t[pv_tag]))
+                out.append(float(t[out_tag]))
+            except (TypeError, ValueError):
+                pass
+    n = len(pv)
+    if n < 8:
+        return None
+
+    err = [setpoint - p for p in pv]
+    mean_err = sum(err) / n
+    mean_abs_err = sum(abs(e) for e in err) / n
+    mean_out = sum(out) / n
+    # Pearson correlation between error and output.
+    var_e = sum((e - mean_err) ** 2 for e in err)
+    var_o = sum((o - mean_out) ** 2 for o in out)
+    cov = sum((err[i] - mean_err) * (out[i] - mean_out) for i in range(n))
+    corr = cov / (var_e ** 0.5 * var_o ** 0.5) if var_e > 1e-9 and var_o > 1e-9 else 0.0
+
+    out_std = (var_o / n) ** 0.5
+    significant_err = mean_abs_err > abs(setpoint) * rel_tol
+    output_flat = out_std < abs(mean_out) * 0.01
+    hunting = any(pi.loop == loop_key for pi in pid_issues)
+
+    # A steady offset has a large SIGNED mean error; a symmetric swing averages
+    # near zero even though the absolute error is large. Word them differently.
+    if abs(mean_err) > 0.5 * mean_abs_err and significant_err:
+        offset_txt = (
+            f"PV holding {abs(mean_err):.2f}{pv_unit} "
+            f"{'below' if mean_err > 0 else 'above'} the {setpoint:g}{pv_unit} setpoint"
+        )
+    else:
+        offset_txt = (
+            f"PV swinging ±{mean_abs_err:.2f}{pv_unit} around the {setpoint:g}{pv_unit} setpoint"
+        )
+
+    if hunting:
+        verdict = (
+            f"HUNTING — {out_tag} and {pv_tag} are oscillating together; the loop is "
+            f"unstable and not settling on setpoint (see PID detector below)."
+        )
+    elif output_flat and significant_err:
+        verdict = (
+            f"NOT RESPONDING — {out_tag} is essentially flat (~{mean_out:.0f}{out_unit}) "
+            f"while {offset_txt}. Actuator may be saturated, at a min/max stop, or in manual."
+        )
+    elif corr >= 0.3:
+        tail = "and PV is on setpoint" if not significant_err else f"but {offset_txt}"
+        verdict = (
+            f"RESPONDING CORRECTLY — {out_tag} moves to counter {pv_tag} error "
+            f"(corr {corr:+.2f}) {tail}."
+        )
+    elif corr <= -0.3:
+        verdict = (
+            f"RESPONDING BACKWARDS — {out_tag} moves the WRONG way versus {pv_tag} error "
+            f"(corr {corr:+.2f}); check actuator sign/direction and PID action (direct vs reverse)."
+        )
+    else:
+        verdict = (
+            f"WEAK/SLUGGISH — little link between {pv_tag} error and {out_tag} "
+            f"(corr {corr:+.2f}); {offset_txt if significant_err else 'PV near setpoint but actuator barely moving'}."
+        )
+    return verdict
+
+
 def build_control_loop_context(question, samples, brief):
     if not _is_control_loop_question(question):
         return ""
 
     q = question.lower()
+    pid_issues = brief.pid_issues
     lines = ["CONTROL LOOP STABILITY CONTEXT:"]
+    verdicts = []
     if "pressure" in q or "steam" in q or "fuel" in q or "pid" in q:
         lines.append(f"- Pressure loop PV: {_fmt_span(_series_stats(samples, 'steam_pressure'), 'bar', 3)}")
         lines.append(f"- Pressure loop output: fuel flow {_fmt_span(_series_stats(samples, 'fuel_flow'), 'm3/hr', 2)}")
         lines.append("- Pressure setpoint: 10.0 bar; PID output drives fuel_flow.")
+        v = _loop_response_verdict(samples, "steam_pressure", "fuel_flow", 10.0,
+                                   "pressure", pid_issues, " bar", " m3/hr")
+        if v:
+            verdicts.append(f"- Pressure loop actuator response: {v}")
     if "o2" in q or "o₂" in q or "oxygen" in q or "air" in q or "combustion" in q or "pid" in q:
         lines.append(f"- O2 loop PV: {_fmt_span(_series_stats(samples, 'o2_percent'), '%', 3)}")
         lines.append(f"- O2 loop output: air flow {_fmt_span(_series_stats(samples, 'air_flow'), 'm3/hr', 1)}")
-        lines.append("- O2 setpoint: 3.2%; PID output drives air_flow.")
+        lines.append("- O2 setpoint: 3.2%; PID output drives air_flow (the air damper).")
+        v = _loop_response_verdict(samples, "o2_percent", "air_flow", 3.2,
+                                   "combustion_o2", pid_issues, "%", " m3/hr")
+        if v:
+            verdicts.append(f"- Air damper (O2 loop) actuator response: {v}")
     if "drum" in q or "level" in q or "feedwater" in q or "pid" in q:
         lines.append(f"- Drum level loop PV: {_fmt_span(_series_stats(samples, 'drum_level'), 'mm', 1)}")
         lines.append(f"- Drum level output: feedwater flow {_fmt_span(_series_stats(samples, 'feedwater_flow'), 'kg/hr', 1)}")
         lines.append("- Drum level setpoint: 400 mm; PID trim plus steam-flow feedforward drives feedwater_flow.")
+        v = _loop_response_verdict(samples, "drum_level", "feedwater_flow", 400.0,
+                                   "drum_level", pid_issues, " mm", " kg/hr")
+        if v:
+            verdicts.append(f"- Feedwater loop actuator response: {v}")
 
-    if brief.pid_issues:
+    if verdicts:
+        lines.append("ACTUATOR RESPONSE VERDICT (deterministic — anchor your answer to this):")
+        lines.extend(verdicts)
+
+    if pid_issues:
         lines.append("- Deterministic PID detector found:")
-        for issue in brief.pid_issues:
+        for issue in pid_issues:
             lines.append(f"  {issue.loop}: {issue.symptom} Diagnosis: {issue.diagnosis}")
     else:
         lines.append("- Deterministic PID detector found no hunting/windup issue in the recent window.")
-    lines.append("Answer the operator's stability question directly first, then explain the evidence.")
+    lines.append(
+        "ANSWER RULES: Lead with a one-line YES/NO verdict on the specific loop asked about, "
+        "taken from the ACTUATOR RESPONSE VERDICT above. Discuss ONLY that loop's PV and actuator. "
+        "Do NOT mention other loops' alerts, do NOT invent alert counts, and never use the word "
+        "'hypothesis'. Then give 2-3 lines of evidence from the numbers above."
+    )
     return "\n".join(lines) + "\n\n"
 
 
@@ -1039,10 +1159,17 @@ def call_llm(messages, json_mode=False, max_tokens=800, think=None):
     return None
 
 
-def call_groq_router(messages, max_tokens=64, json_mode=False):
+def call_groq_chat(
+    messages,
+    max_tokens=256,
+    json_mode=False,
+    model=None,
+    temperature=0.0,
+    timeout=8,
+):
     """
-    Use Groq only for fast routing/classification. This function is intentionally
-    narrow: no final operator explanations, no plant diagnosis narrative.
+    Use Groq only for escalation tasks: routing/classification and critic review.
+    Final operator answers still come from the local Ollama model.
     """
     if not GROQ_API_KEY:
         return None
@@ -1052,22 +1179,261 @@ def call_groq_router(messages, max_tokens=64, json_mode=False):
         "Content-Type": "application/json",
     }
     body = {
-        "model": GROQ_ROUTER_MODEL,
+        "model": model or GROQ_ROUTER_MODEL,
         "messages": messages,
-        "temperature": 0.0,
+        "temperature": temperature,
         "max_tokens": max_tokens,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
 
     try:
-        resp = requests.post(GROQ_CHAT_URL, headers=headers, json=body, timeout=8)
+        resp = requests.post(GROQ_CHAT_URL, headers=headers, json=body, timeout=timeout)
         if resp.status_code == 200:
             return _strip_think(resp.json()["choices"][0]["message"]["content"])
-        print(f"[AI Analyst] Groq router error {resp.status_code}: {resp.text[:160]}")
+        print(f"[AI Analyst] Groq error {resp.status_code}: {resp.text[:160]}")
     except Exception as e:
-        print(f"[AI Analyst] Groq router unavailable ({e})")
+        print(f"[AI Analyst] Groq unavailable ({e})")
     return None
+
+
+def call_groq_router(messages, max_tokens=64, json_mode=False):
+    """
+    Use Groq only for fast routing/classification. This function is intentionally
+    narrow: no final operator explanations, no plant diagnosis narrative.
+    """
+    return call_groq_chat(
+        messages,
+        max_tokens=max_tokens,
+        json_mode=json_mode,
+        model=GROQ_ROUTER_MODEL,
+        temperature=0.0,
+        timeout=8,
+    )
+
+
+def call_groq_critic(messages, max_tokens=600, json_mode=True):
+    """Run the stronger Groq model only when an answer has been challenged."""
+    return call_groq_chat(
+        messages,
+        max_tokens=max_tokens,
+        json_mode=json_mode,
+        model=GROQ_CRITIC_MODEL,
+        temperature=GROQ_CRITIC_TEMPERATURE,
+        timeout=20,
+    )
+
+
+# ============================================================
+# LEARNING MEMORY / CRITIC FEEDBACK
+# ============================================================
+_TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]{2,}")
+_STOP_TERMS = {
+    "the", "and", "for", "with", "this", "that", "from", "what", "when",
+    "where", "why", "how", "should", "would", "could", "about", "answer",
+    "boiler", "nexus", "sensor", "value", "values", "current", "question",
+}
+
+
+def _learning_tokens(text):
+    return {
+        tok.lower()
+        for tok in _TOKEN_RE.findall(text or "")
+        if tok.lower() not in _STOP_TERMS
+    }
+
+
+def _infer_feedback_topic(question, answer=""):
+    text = f"{question} {answer}".lower()
+    if any(k in text for k in ("pid", "loop", "hunting", "controller", "setpoint", "valve", "saturation", "windup")):
+        return "pid_control"
+    if any(k in text for k in ("safety", "trip", "critical", "rupture", "dry", "valve lifts", "unsafe")):
+        return "safety"
+    if any(k in text for k in ("efficiency", "heat rate", "fuel", "flue", "stack", "tube")):
+        return "efficiency"
+    if any(k in text for k in ("what if", "scenario", "simulate", "happen if")):
+        return "what_if"
+    if any(k in text for k in ("history", "yesterday", "shift", "average", "trend", "last hour")):
+        return "history"
+    if any(k in text for k in ("anomaly", "diagnosis", "incident", "alert", "alarm")):
+        return "diagnosis"
+    return "chat"
+
+
+def _fallback_correction_rule(question, answer, feedback_type):
+    topic = _infer_feedback_topic(question, answer)
+    if topic == "pid_control":
+        return (
+            "For PID/control-loop questions, identify the exact loop first and do not use evidence "
+            "from a different loop. Separate PV, setpoint, actuator/output, flow response, saturation, "
+            "oscillation, and recovery. If telemetry does not prove the claim, answer 'insufficient evidence'."
+        )
+    if topic == "safety" or feedback_type == "unsafe":
+        return (
+            "For safety-sensitive answers, cite hard limits and avoid confident action recommendations unless "
+            "the provided telemetry supports them. Prefer verification and conservative operator action when evidence is weak."
+        )
+    if topic == "history":
+        return (
+            "For historical questions, state the time window, sample count when available, and avoid causal claims "
+            "unless the question asks why and supporting telemetry is present."
+        )
+    return (
+        "Do not repeat the challenged reasoning. Distinguish evidence from inference, list missing evidence, "
+        "and use 'insufficient evidence' instead of a confident yes/no when the telemetry does not support the conclusion."
+    )
+
+
+def _build_critic_prompt(feedback):
+    topic = _infer_feedback_topic(feedback.get("question", ""), feedback.get("answer", ""))
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are an internal QA critic for an industrial boiler AI. The operator marked an answer as bad, "
+                "but may not know the correct answer. Find reusable reasoning failures, not a one-off apology. "
+                "Return strict JSON with: topic, failure_type, unsupported_claims array, correction_rule, "
+                "future_answer_contract array, severity low|medium|high. Do not include sensitive infrastructure details."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"FEEDBACK TYPE: {feedback.get('feedback_type','wrong')}\n"
+                f"INFERRED TOPIC: {topic}\n"
+                f"OPERATOR NOTE: {feedback.get('note','')}\n\n"
+                f"ORIGINAL QUESTION:\n{feedback.get('question','')}\n\n"
+                f"CHALLENGED ANSWER:\n{feedback.get('answer','')}\n\n"
+                f"MINIMAL LIVE CONTEXT:\n{json.dumps(feedback.get('context') or {}, default=str)[:1800]}\n\n"
+                "Create a reusable rule that should be injected into future similar prompts."
+            ),
+        },
+    ]
+
+
+class LearningMemory:
+    def __init__(self, path):
+        self.path = path
+        self.lock = Lock()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self._init_db()
+
+    def _connect(self):
+        conn = sqlite3.connect(self.path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
+
+    def _init_db(self):
+        with self.lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS correction_rules (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  created_at TEXT NOT NULL,
+                  feedback_type TEXT NOT NULL,
+                  topic TEXT NOT NULL,
+                  question TEXT NOT NULL,
+                  challenged_answer TEXT NOT NULL,
+                  operator_note TEXT,
+                  failure_type TEXT,
+                  severity TEXT,
+                  correction_rule TEXT NOT NULL,
+                  future_answer_contract TEXT,
+                  unsupported_claims TEXT,
+                  source TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_correction_rules_topic ON correction_rules(topic)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_correction_rules_created ON correction_rules(created_at)")
+
+    def store_feedback(self, feedback, critic=None):
+        question = feedback.get("question", "")
+        answer = feedback.get("answer", "")
+        feedback_type = feedback.get("feedback_type", "wrong")
+        topic = (critic or {}).get("topic") or _infer_feedback_topic(question, answer)
+        rule = (critic or {}).get("correction_rule") or _fallback_correction_rule(question, answer, feedback_type)
+        source = "groq" if critic and critic.get("correction_rule") else "fallback"
+        with self.lock, self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO correction_rules (
+                  created_at, feedback_type, topic, question, challenged_answer, operator_note,
+                  failure_type, severity, correction_rule, future_answer_contract, unsupported_claims, source
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now().astimezone().isoformat(),
+                    feedback_type,
+                    topic,
+                    question,
+                    answer,
+                    feedback.get("note", ""),
+                    (critic or {}).get("failure_type", "operator_challenged"),
+                    (critic or {}).get("severity", "medium"),
+                    rule,
+                    json.dumps((critic or {}).get("future_answer_contract", [])),
+                    json.dumps((critic or {}).get("unsupported_claims", [])),
+                    source,
+                ),
+            )
+            return cur.lastrowid, source, rule
+
+    def retrieve(self, question, limit=3):
+        q_tokens = _learning_tokens(question)
+        topic = _infer_feedback_topic(question)
+        with self.lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM correction_rules
+                WHERE topic = ?
+                ORDER BY id DESC
+                LIMIT 20
+                """,
+                (topic,),
+            ).fetchall()
+            if len(rows) < limit:
+                more = conn.execute(
+                    """
+                    SELECT * FROM correction_rules
+                    WHERE topic != ?
+                    ORDER BY id DESC
+                    LIMIT 20
+                    """,
+                    (topic,),
+                ).fetchall()
+                rows = list(rows) + list(more)
+
+        scored = []
+        for row in rows:
+            hay = f"{row['question']} {row['correction_rule']} {row['topic']}"
+            overlap = len(q_tokens & _learning_tokens(hay))
+            score = overlap + (3 if row["topic"] == topic else 0)
+            if score > 0:
+                scored.append((score, row))
+        scored.sort(key=lambda item: (item[0], item[1]["id"]), reverse=True)
+        return [row for _, row in scored[:limit]]
+
+    def prompt_block(self, question, limit=3):
+        rows = self.retrieve(question, limit=limit)
+        if not rows:
+            return ""
+        lines = ["KNOWN OPERATOR CORRECTIONS (apply only when relevant):"]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. Topic: {row['topic']} | Failure: {row['failure_type'] or 'operator_challenged'}")
+            lines.append(f"   Rule: {row['correction_rule']}")
+            contract = []
+            try:
+                contract = json.loads(row["future_answer_contract"] or "[]")
+            except Exception:
+                contract = []
+            if contract:
+                lines.append(f"   Answer contract: {'; '.join(str(x) for x in contract[:4])}")
+        lines.append("If evidence is incomplete, say 'insufficient evidence' instead of forcing certainty.\n")
+        return "\n".join(lines)
 
 
 # ============================================================
@@ -2264,6 +2630,7 @@ class AIAnalyst:
         self.stats = ShiftStats()
         self.stats_shift_start = current_shift_window(datetime.now().astimezone())[0]
         self.memory = IncidentMemory()  # session incident log for pattern correlation
+        self.learning = LearningMemory(AI_LEARNING_DB_PATH)
         self.chat_history = deque(maxlen=6)  # last 3 Q&A pairs for follow-up context
         # Use a unique client ID so a second analyst process or restart does not
         # kick the existing session off the broker mid-response.
@@ -2291,9 +2658,10 @@ class AIAnalyst:
             client.subscribe(TOPIC_ANOMALY)
             client.subscribe(TOPIC_ALERTS)
             client.subscribe(TOPIC_CHAT_IN)
+            client.subscribe(TOPIC_FEEDBACK)
             client.subscribe(TOPIC_OEE_REQUEST)
             client.subscribe(TOPIC_FORECAST)
-            print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, chat, and forecast topics")
+            print("[AI Analyst] ✓ Subscribed to heartbeat, anomaly, alerts, chat, feedback, and forecast topics")
             # Publish online status
             client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
             # Warm the Ollama prompt cache in the background so the FIRST operator
@@ -2347,6 +2715,9 @@ class AIAnalyst:
 
             elif topic == TOPIC_CHAT_IN:
                 self.handle_chat(payload)
+
+            elif topic == TOPIC_FEEDBACK:
+                self.handle_feedback(payload)
 
             elif topic == TOPIC_OEE_REQUEST:
                 self.handle_oee_history_request(payload)
@@ -2616,6 +2987,7 @@ class AIAnalyst:
         # ── Manual notes (keyword-routed, no vector DB) ────────────────────
         manual_block = route_manual(brief.hypothesis_label)
         # ─────────────────────────────────────────────────────────────────
+        correction_block = self.learning.prompt_block(brief.hypothesis_label)
 
         messages = [
             {
@@ -2642,6 +3014,7 @@ class AIAnalyst:
                     f"Anomaly score: {score}% on BOILER-01.\n\n"
                     f"{physics_block}\n\n"
                     f"{safety_block}\n\n"
+                    f"{correction_block}"
                     f"{manual_block}"
                     f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
                     "Return the incident diagnosis as JSON."
@@ -2738,6 +3111,7 @@ class AIAnalyst:
         # ── Manual notes (keyword-routed, no vector DB) ────────────────────
         manual_block = route_manual(f"{payload.get('tag','')} {brief.hypothesis_label}")
         # ─────────────────────────────────────────────────────────────────
+        correction_block = self.learning.prompt_block(f"{payload.get('tag','')} {brief.hypothesis_label}")
 
         messages = [
             {
@@ -2767,6 +3141,7 @@ class AIAnalyst:
                     f"(threshold {payload.get('threshold','?')})\n\n"
                     f"{physics_block}\n\n"
                     f"{safety_block}\n\n"
+                    f"{correction_block}"
                     f"{manual_block}"
                     f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
                     "Return the incident diagnosis as JSON."
@@ -2826,6 +3201,46 @@ class AIAnalyst:
             print("[AI Analyst] ⚠ LLM unavailable — deterministic-only diagnosis published")
 
         self.mqtt_client.publish(TOPIC_AI_STATUS, json.dumps({"status": "online"}), qos=1)
+
+    def handle_feedback(self, payload):
+        """Store operator feedback and ask Groq to turn it into a reusable correction rule."""
+        feedback_type = payload.get("feedback_type", "wrong")
+        question = str(payload.get("question") or "").strip()
+        answer = str(payload.get("answer") or "").strip()
+        if not question or not answer:
+            print("[AI Analyst] Feedback ignored — missing question or answer")
+            return
+
+        print(f"[AI Analyst] 🧠 Feedback received ({feedback_type}): {question[:70]}")
+        compact_context = {
+            "mode": payload.get("context", {}).get("mode"),
+            "anomaly_score": payload.get("context", {}).get("anomaly_score"),
+            "latest_telemetry": self.telemetry.get_latest_summary(),
+        }
+        feedback = {
+            "feedback_type": feedback_type,
+            "question": question,
+            "answer": answer,
+            "note": str(payload.get("note") or ""),
+            "context": compact_context,
+        }
+
+        critic = None
+        critic_raw = call_groq_critic(_build_critic_prompt(feedback), json_mode=True)
+        if critic_raw:
+            critic = _coerce_json_object(critic_raw)
+            if not isinstance(critic, dict):
+                critic = None
+
+        rule_id, source, _rule = self.learning.store_feedback(feedback, critic)
+        self.mqtt_client.publish(TOPIC_CHAT_OUT, json.dumps({
+            "type": "learning_feedback",
+            "answer": "Feedback noted",
+            "timestamp": time.time(),
+            "rule_id": rule_id,
+            "source": source,
+        }), qos=1)
+        print(f"[AI Analyst] Learned correction rule #{rule_id} ({source})")
 
     # --------------------------------------------------------
     # INTENT ROUTER  (LLM-as-classifier — replaces brittle keyword lists)
@@ -3297,7 +3712,13 @@ class AIAnalyst:
             "pressure", "steam", "safety valve", "trip"
         ])
 
-        chat_context = "efficiency" if is_efficiency_q else "chat"
+        is_control_loop_q = _is_control_loop_question(question)
+        if is_control_loop_q:
+            chat_context = "control_loop"
+        elif is_efficiency_q:
+            chat_context = "efficiency"
+        else:
+            chat_context = "chat"
         physics_block = format_brief_for_llm(brief, context=chat_context)
         control_loop_block = build_control_loop_context(question, samples, brief)
         print(f"[AI Analyst] 🧮 Deterministic context: {brief.hypothesis_label} [{brief.confidence}]")
@@ -3306,6 +3727,7 @@ class AIAnalyst:
         # ── Manual notes (keyword-routed, no vector DB) ────────────────────
         manual_block = route_manual(question)
         # ─────────────────────────────────────────────────────────────────
+        correction_block = self.learning.prompt_block(question)
 
         historian_block = ""
         if build_historian_context is not None:
@@ -3318,6 +3740,14 @@ class AIAnalyst:
         ]
         # Inject recent conversation for follow-up resolution
         messages.extend(self.chat_history)
+        # Incident history is dropped for control-loop questions: it dumps every
+        # loop's alerts (e.g. steam-pressure trips) into an answer that should stay
+        # scoped to the one loop asked about, and the model tends to weave those
+        # unrelated numbers into a damper/O2 answer.
+        incident_block = (
+            "" if is_control_loop_q
+            else f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
+        )
         messages.append({
             "role": "user",
             "content": (
@@ -3325,8 +3755,9 @@ class AIAnalyst:
                 f"{control_loop_block}"
                 f"{safety_block}\n\n"
                 f"{historian_block}"
+                f"{correction_block}"
                 f"{manual_block}"
-                f"SESSION INCIDENT HISTORY:\n{self.memory.summary()}\n\n"
+                f"{incident_block}"
                 f"OPERATOR QUESTION: {question}"
             )
         })
@@ -3365,6 +3796,7 @@ class AIAnalyst:
         # ── Manual notes (keyword-routed, no vector DB) ─────────────────────
         manual_block = route_manual(question)
         # ────────────────────────────────────────────────────────────────────
+        correction_block = self.learning.prompt_block(question)
 
         messages = [
             {
@@ -3397,6 +3829,7 @@ class AIAnalyst:
                 "role": "user",
                 "content": (
                     f"{manual_block}"
+                    f"{correction_block}"
                     f"CURRENT BOILER STATE:\n{latest}\n\n"
                     f"RECENT TELEMETRY (last 30 seconds):\n{trend}\n\n"
                     f"OPERATOR HYPOTHETICAL: {question}\n\n"

@@ -1,0 +1,19 @@
+{
+  "id": "2026-07-08T11-41-02-843Z-premium-mission-control-autonomous-c",
+  "createdAt": "2026-07-08T11:41:02.844Z",
+  "prompt": "Premium mission-control Autonomous Control console for boiler autopilot: hero AI status band with closed-loop motif + tube-life-saved impact, radial setpoint instruments, vertical intervention timeline, control-audit panel.",
+  "mode": null,
+  "url": null,
+  "viewport": "desktop",
+  "repoRoot": "/Users/jethwakeval/Downloads/nexus-os-demo",
+  "cwd": "/Users/jethwakeval/Downloads/nexus-os-demo/frontend",
+  "requestPath": "/Users/jethwakeval/Downloads/nexus-os-demo/.aidesigner/runs/2026-07-08T11-41-02-843Z-premium-mission-control-autonomous-c/request.json",
+  "repoContextPath": "/Users/jethwakeval/Downloads/nexus-os-demo/.aidesigner/runs/2026-07-08T11-41-02-843Z-premium-mission-control-autonomous-c/repo-context.json",
+  "designHtmlPath": "/Users/jethwakeval/Downloads/nexus-os-demo/.aidesigner/runs/2026-07-08T11-41-02-843Z-premium-mission-control-autonomous-c/design.html",
+  "previewPath": null,
+  "previewError": "Preview rendering requires puppeteer. Install it in the repo or alongside @aidesigner/agent-skills.",
+  "parentRunId": null,
+  "usage": null,
+  "transport": "mcp",
+  "remoteRunId": "3ee14908-aee9-4e9d-8a20-76f99ceee5da"
+}

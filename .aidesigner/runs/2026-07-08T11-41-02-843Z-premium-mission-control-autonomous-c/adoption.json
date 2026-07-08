@@ -1,0 +1,33 @@
+{
+  "id": "2026-07-08T11-41-02-843Z-premium-mission-control-autonomous-c",
+  "createdAt": "2026-07-08T11:45:26.202Z",
+  "repoRoot": "/Users/jethwakeval/Downloads/nexus-os-demo",
+  "prompt": "Premium mission-control Autonomous Control console for boiler autopilot: hero AI status band with closed-loop motif + tube-life-saved impact, radial setpoint instruments, vertical intervention timeline, control-audit panel.",
+  "targetRouteHint": null,
+  "targetFileHint": null,
+  "detectedFrameworks": [],
+  "componentLibraries": [],
+  "stylingSystems": [],
+  "routeCandidates": [],
+  "tokenSources": [],
+  "componentDirectories": [],
+  "htmlStructure": {
+    "title": "Autonomous Control Console | Boiler 04",
+    "primaryHeading": "Boiler 04 | Autopilot",
+    "sectionCount": 0,
+    "buttonCount": 1,
+    "formCount": 0,
+    "cardLikeCount": 1,
+    "hasNavigation": false,
+    "hasFooter": false,
+    "hasPricingSignals": false,
+    "hasDashboardSignals": false
+  },
+  "recommendations": [
+    "Use the generated preview as the visual truth source while porting the layout."
+  ],
+  "warnings": [
+    "No frontend framework was detected. Validate the target surface manually before porting.",
+    "No obvious route targets were detected. Choose a target file deliberately before editing."
+  ]
+}

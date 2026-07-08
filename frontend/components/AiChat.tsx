@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { AlertCircle, BookOpen, Check, CheckCircle, ChevronLeft, ChevronRight, Cpu, FileText, FlaskConical, Loader2, RefreshCw, Send, Upload, Wrench } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
-import { formatRich, preprocessMessage } from '@/lib/utils';
+import { formatRich, preprocessMessage, normalizeToString } from '@/lib/utils';
 import type { ChatMessage, DiagnosisPayload, AiResponsePayload } from '@/types/telemetry';
 
 const THINKING_STEPS = [
@@ -18,6 +18,8 @@ const SEVERITY_BADGE: Record<string, string> = {
   critical: '#ef4444', high: '#f97316', warning: '#f59e0b',
   medium: '#eab308', low: '#3b82f6', normal: '#22c55e',
 };
+
+const AI_FEEDBACK_TOPIC = 'factory/pumphouse4/boiler/unit01/ai/feedback';
 
 type UploadState = 'idle' | 'uploading' | 'done' | 'error';
 interface KbDoc { filename: string; doc_id: string; chunks_stored?: number; }
@@ -227,7 +229,19 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
 
         {/* Messages */}
         <div ref={messagesRef} className="ai-messages-area hide-scrollbar">
-          {chatMessages.map((msg) => <ChatBubble key={msg.id} msg={msg} thinkingPhase={thinkingPhase} thinkingDots={thinkingDots} woCount={woCount} />)}
+          {chatMessages.map((msg, index) => {
+            const priorUser = [...chatMessages.slice(0, index)].reverse().find((m) => m.type === 'user');
+            return (
+              <ChatBubble
+                key={msg.id}
+                msg={msg}
+                priorQuestion={priorUser?.content || ''}
+                thinkingPhase={thinkingPhase}
+                thinkingDots={thinkingDots}
+                woCount={woCount}
+              />
+            );
+          })}
         </div>
 
         {/* Knowledge Base panel */}
@@ -389,10 +403,50 @@ function AiAvatar() {
   );
 }
 
-function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMessage; thinkingPhase: number; thinkingDots: string; woCount: number }) {
+function stringifyFeedbackAnswer(msg: ChatMessage) {
+  if (msg.content) return msg.content;
+  if (msg.data) return JSON.stringify(msg.data);
+  return '';
+}
+
+function ChatBubble({
+  msg,
+  priorQuestion,
+  thinkingPhase,
+  thinkingDots,
+  woCount,
+}: {
+  msg: ChatMessage;
+  priorQuestion: string;
+  thinkingPhase: number;
+  thinkingDots: string;
+  woCount: number;
+}) {
+  const publish = usePublish();
+  const { mode, anomalyScore, tags } = useNexusStore();
+  const [feedbackSent, setFeedbackSent] = useState<string | null>(null);
   const [typedContent, setTypedContent] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const canSendFeedback = Boolean(priorQuestion) && !['user', 'thinking'].includes(msg.type);
+
+  const sendFeedback = (feedbackType: 'wrong' | 'unsafe' | 'missing_evidence' | 'unclear') => {
+    if (!canSendFeedback) return;
+    publish(AI_FEEDBACK_TOPIC, {
+      feedback_type: feedbackType,
+      question: priorQuestion,
+      answer: stringifyFeedbackAnswer(msg),
+      answer_type: msg.type,
+      message_id: msg.id,
+      timestamp: new Date().toISOString(),
+      context: {
+        mode,
+        anomaly_score: anomalyScore,
+        tags,
+      },
+    });
+    setFeedbackSent(feedbackType);
+  };
 
   useEffect(() => {
     if (msg.type === 'ai' && msg.content) {
@@ -466,6 +520,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <DiagnosisCard data={msg.data as DiagnosisPayload} woCount={woCount} ts={msg.timestamp} />
+          <FeedbackControls canSend={canSendFeedback} sent={feedbackSent} onSend={sendFeedback} />
         </div>
       </div>
     );
@@ -477,6 +532,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <ShiftReportCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
+          <FeedbackControls canSend={canSendFeedback} sent={feedbackSent} onSend={sendFeedback} />
         </div>
       </div>
     );
@@ -488,6 +544,7 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <WhatIfCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
+          <FeedbackControls canSend={canSendFeedback} sent={feedbackSent} onSend={sendFeedback} />
         </div>
       </div>
     );
@@ -499,7 +556,17 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <MaintenancePrioritiesCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
+          <FeedbackControls canSend={canSendFeedback} sent={feedbackSent} onSend={sendFeedback} />
         </div>
+      </div>
+    );
+  }
+
+  if (msg.type === 'learning_feedback') {
+    return (
+      <div className="ai-feedback-toast slide-in">
+        <Check size={13} strokeWidth={2.8} />
+        <span>Feedback noted</span>
       </div>
     );
   }
@@ -532,34 +599,37 @@ function ChatBubble({ msg, thinkingPhase, thinkingDots, woCount }: { msg: ChatMe
         {!isTyping && (
           <p className="bubble-time">Nexus AI · {msg.timestamp}</p>
         )}
+        <FeedbackControls canSend={canSendFeedback && !isTyping} sent={feedbackSent} onSend={sendFeedback} />
       </div>
     </div>
   );
 }
 
-/** Safely converts any LLM output value (string | object | array) to a displayable string. */
-function normalizeToString(val: unknown): string {
-  if (val == null) return '';
-  if (typeof val === 'string') return val;
-  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-  if (Array.isArray(val)) {
-    return val.map((item, i) => `${i + 1}. ${normalizeToString(item)}`).join('\n');
+function FeedbackControls({
+  canSend,
+  sent,
+  onSend,
+}: {
+  canSend: boolean;
+  sent: string | null;
+  onSend: (feedbackType: 'wrong' | 'unsafe' | 'missing_evidence' | 'unclear') => void;
+}) {
+  if (!canSend) return null;
+  if (sent) {
+    return <div className="ai-feedback-sent">Feedback sent: {sent.replace('_', ' ')}</div>;
   }
-  if (typeof val === 'object') {
-    // Try common text-carrying keys first, then fall back to JSON
-    const obj = val as Record<string, unknown>;
-    const text = obj.action ?? obj.step ?? obj.description ?? obj.text ?? obj.message ?? obj.recommendation;
-    if (text != null) {
-      const extras: string[] = [];
-      if (obj.urgency) extras.push(`Urgency: ${obj.urgency}`);
-      if (obj.timing)  extras.push(`Timing: ${obj.timing}`);
-      return extras.length ? `${normalizeToString(text)} (${extras.join(', ')})` : normalizeToString(text);
-    }
-    return JSON.stringify(val);
-  }
-  return String(val);
+  return (
+    <div className="ai-feedback-row" aria-label="AI answer feedback">
+      <span className="ai-feedback-label">Flag</span>
+      <button type="button" onClick={() => onSend('wrong')}>Wrong</button>
+      <button type="button" onClick={() => onSend('missing_evidence')}>Missing evidence</button>
+      <button type="button" onClick={() => onSend('unsafe')}>Unsafe</button>
+      <button type="button" onClick={() => onSend('unclear')}>Unclear</button>
+    </div>
+  );
 }
 
+/** Safely converts any LLM output value (string | object | array) to a displayable string. */
 function parseNumericValue(value: number | string | undefined): number | null {
   if (value == null) return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;

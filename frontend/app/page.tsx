@@ -235,8 +235,8 @@ export default function OverviewPage() {
             <span className="audit-pill">Live</span>
           </div>
           <div className="ov-trend-grid">
-            <TrendTile label="Efficiency" unit="%" color={pal.status.good}
-              value={tags ? tags.efficiency.toFixed(1) : '--'} data={kpiSeries.datasets[2]} />
+            <TrendTile label="Steam Pressure" unit="bar" color={pal.status.warn}
+              value={tags ? tags.steam_pressure.toFixed(1) : '--'} data={kpiSeries.datasets[0]} />
             <TrendTile label="Failure Risk" unit="%" color={pal.status.crit}
               value={`${risk}`} data={riskSeries.datasets[0]} />
             <TrendTile label="Anomaly Score" unit="%" color={pal.factor.quality}

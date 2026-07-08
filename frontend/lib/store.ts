@@ -429,8 +429,9 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
         type: data.type === 'shift_report' ? 'shift_report'
           : data.type === 'what_if' ? 'what_if'
           : data.type === 'maintenance_priorities' ? 'maintenance_priorities'
+          : data.type === 'learning_feedback' ? 'learning_feedback'
           : 'ai',
-        content: data.answer || data.response || '',
+        content: data.type === 'learning_feedback' ? 'Feedback noted' : data.answer || data.response || '',
         timestamp: new Date().toLocaleTimeString(),
         data,
       };

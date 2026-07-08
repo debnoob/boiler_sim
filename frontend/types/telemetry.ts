@@ -111,7 +111,7 @@ export interface MaintenancePriority {
 }
 
 export interface AiResponsePayload {
-  type?: 'shift_report' | 'what_if' | 'chat' | 'maintenance_priorities';
+  type?: 'shift_report' | 'what_if' | 'chat' | 'maintenance_priorities' | 'learning_feedback';
   answer?: string;
   response?: string;
   summary?: string;
@@ -198,7 +198,7 @@ export interface AlertEvent {
   timestamp: string;
 }
 
-export type ChatMessageType = 'ai' | 'user' | 'thinking' | 'diagnosis' | 'shift_report' | 'what_if' | 'maintenance_priorities';
+export type ChatMessageType = 'ai' | 'user' | 'thinking' | 'diagnosis' | 'shift_report' | 'what_if' | 'maintenance_priorities' | 'learning_feedback';
 
 export interface ChatMessage {
   id: string;

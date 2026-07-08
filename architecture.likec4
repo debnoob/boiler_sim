@@ -1,0 +1,96 @@
+specification {
+  element actor {
+    style {
+      shape person
+    }
+  }
+
+  element system {
+    style {
+      shape rounded-rectangle
+    }
+  }
+
+  element service {
+    style {
+      shape rounded-rectangle
+    }
+  }
+
+  element broker {
+    style {
+      shape queue
+    }
+  }
+
+  element datastore {
+    style {
+      shape cylinder
+    }
+  }
+
+  element external {
+    style {
+      shape cloud
+    }
+  }
+}
+
+model {
+  operator = actor 'Plant Operator'
+
+  nexus = system 'NEXUS OS Demo' {
+    frontend = service 'Dashboard'
+    broker = broker 'Mosquitto MQTT'
+    boiler = service 'Boiler Engine'
+    detector = service 'Anomaly Detector'
+    forecaster = service 'Forecasting Engine'
+    analyst = service 'AI Analyst'
+    rag = service 'RAG Server'
+    historian = service 'Historian'
+    db = datastore 'Historian DB'
+  }
+
+  groq = external 'Groq API'
+  manual = datastore 'Manual Docs'
+
+  operator -> nexus.frontend 'uses'
+  nexus.frontend -> nexus.broker 'connects'
+
+  nexus.boiler -> nexus.broker 'telemetry'
+  nexus.broker -> nexus.detector 'telemetry'
+  nexus.detector -> nexus.broker 'anomalies'
+
+  nexus.broker -> nexus.forecaster 'telemetry'
+  nexus.forecaster -> nexus.broker 'forecasts'
+
+  nexus.broker -> nexus.analyst 'events'
+  nexus.analyst -> groq 'calls'
+  nexus.analyst -> nexus.rag 'queries'
+  nexus.rag -> manual 'reads'
+  nexus.analyst -> nexus.broker 'results'
+
+  nexus.broker -> nexus.historian 'events'
+  nexus.historian -> nexus.db 'stores'
+}
+
+views {
+  view architecture of nexus {
+    title 'Runtime Architecture'
+
+    include operator
+    include nexus.frontend
+    include nexus.broker
+    include nexus.boiler
+    include nexus.detector
+    include nexus.forecaster
+    include nexus.analyst
+    include nexus.rag
+    include nexus.historian
+    include nexus.db
+    include groq
+    include manual
+
+    autolayout lr
+  }
+}

@@ -375,10 +375,32 @@ export default function OperationsPage() {
   // window to the current wall-clock hour made earlier hours drop out (they
   // failed the hourKey lookup and rendered as empty bars), so window over the
   // real series instead — previously produced hours stay visible.
-  const steamHourWindow = useMemo(
-    () => steamHourlySeries.slice(-STEAM_HOUR_WINDOW),
-    [steamHourlySeries],
-  );
+  // Always lay out a fixed 6-hour grid so bars sit in consistent, side-by-side
+  // columns. When fewer than 6 real buckets exist, pad the leading slots with
+  // zero-value placeholders (anchored to consecutive hour keys) instead of
+  // letting Chart.js stretch a couple of bars across the whole width.
+  const steamHourWindow = useMemo(() => {
+    const real = steamHourlySeries.slice(-STEAM_HOUR_WINDOW);
+    if (real.length >= STEAM_HOUR_WINDOW) return real;
+    if (real.length === 0) return real;
+    const anchorKey = real[real.length - 1].hourKey;
+    const byKey = new Map(real.map((b) => [b.hourKey, b]));
+    const grid: typeof real = [];
+    for (let i = STEAM_HOUR_WINDOW - 1; i >= 0; i--) {
+      const hourKey = anchorKey - i;
+      const existing = byKey.get(hourKey);
+      if (existing) {
+        grid.push(existing);
+      } else {
+        const label = new Date(hourKey * 3600 * 1000).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        grid.push({ hourKey, label, kg: 0, samples: 0 });
+      }
+    }
+    return grid;
+  }, [steamHourlySeries]);
 
   const steamHourData = {
     labels: steamHourWindow.map((b) => b.label),
@@ -396,9 +418,9 @@ export default function OperationsPage() {
         },
         hoverBackgroundColor: F.thermal,
         borderRadius: 4,
-        categoryPercentage: 0.86,
-        barPercentage: 0.72,
-        maxBarThickness: 42,
+        categoryPercentage: 0.9,
+        barPercentage: 0.8,
+        maxBarThickness: 48,
       },
     ],
   };

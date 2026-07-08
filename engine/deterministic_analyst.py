@@ -875,9 +875,18 @@ def format_brief_for_llm(brief: PhysicsBrief, context: str = "diagnosis") -> str
 
     lines.append("══ DETERMINISTIC PRE-ANALYSIS — DO NOT SECOND-GUESS THESE FINDINGS ══")
     lines.append("")
-    lines.append(
-        f"PRIMARY HYPOTHESIS: {brief.hypothesis_label}  [{brief.confidence} confidence]"
-    )
+    if context == "control_loop":
+        # For a loop-tuning question the overall-state label is a distraction and
+        # makes the model frame its answer around "the hypothesis". Note it as
+        # background only; stability is judged from the CONTROL LOOP block instead.
+        lines.append(
+            f"OVERALL PLANT STATE (background only — describes the whole unit, NOT loop tuning): "
+            f"{brief.hypothesis_label}  [{brief.confidence} confidence]"
+        )
+    else:
+        lines.append(
+            f"PRIMARY HYPOTHESIS: {brief.hypothesis_label}  [{brief.confidence} confidence]"
+        )
     lines.append("")
 
     # Deviating sensors — top 6 max to keep prompts tight
@@ -936,6 +945,13 @@ def format_brief_for_llm(brief: PhysicsBrief, context: str = "diagnosis") -> str
             f"to '{brief.hypothesis_label}'. Prioritise the corrective actions above based on "
             "current severity and timing. Do NOT invent new sensor readings or hypotheses. "
             "Be direct and actionable — this is an industrial operations audience."
+        )
+    elif context == "control_loop":
+        lines.append(
+            "Your task: Answer the operator's control-loop question from the CONTROL LOOP "
+            "block that follows. Judge stability and actuator response ONLY from that block — "
+            "the plant-state label above is background, not a stability verdict. "
+            "Keep the response under 180 words."
         )
     elif context in ("chat", "efficiency"):
         lines.append(
