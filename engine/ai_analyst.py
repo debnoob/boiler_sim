@@ -1260,7 +1260,25 @@ def _infer_feedback_topic(question, answer=""):
     return "chat"
 
 
-def _fallback_correction_rule(question, answer, feedback_type):
+def _clarity_correction_rule(topic):
+    """The operator found the answer hard to follow, not necessarily wrong.
+    Fix presentation, not facts."""
+    base = (
+        "The operator marked the previous answer UNCLEAR, not necessarily wrong. Do not change correct "
+        "facts; fix the presentation. Lead with a direct one-line answer, then a short dash-bullet "
+        "checklist of concrete steps in the order the operator should do them. Cut theory, hedging, and "
+        "repetition. Keep it under 120 words and use plain operator language, not jargon."
+    )
+    if topic == "pid_control":
+        base += (
+            " Name the specific loop (pressure, O2, or drum level) up front, then list what to check in "
+            "order: PV vs setpoint, whether the actuator is moving, saturation/manual, then gains."
+        )
+    return base
+
+
+def _correctness_correction_rule(question, answer, feedback_type):
+    """The operator flagged the answer as factually wrong. Fix the reasoning."""
     topic = _infer_feedback_topic(question, answer)
     if topic == "pid_control":
         return (
@@ -1284,6 +1302,21 @@ def _fallback_correction_rule(question, answer, feedback_type):
     )
 
 
+def _fallback_correction_rule(question, answer, feedback_type):
+    # "unclear" is a presentation failure; every other type is a correctness
+    # failure. They need opposite fixes, so branch before topic routing.
+    if feedback_type == "unclear":
+        return _clarity_correction_rule(_infer_feedback_topic(question, answer))
+    return _correctness_correction_rule(question, answer, feedback_type)
+
+
+def _question_signature(question, topic):
+    """Stable key for deduping repeat feedback on the same question/topic, so
+    flagging it again escalates one rule instead of stacking near-duplicates."""
+    tokens = sorted(_learning_tokens(question))
+    return f"{topic}:{' '.join(tokens)}"
+
+
 def _build_critic_prompt(feedback):
     topic = _infer_feedback_topic(feedback.get("question", ""), feedback.get("answer", ""))
     return [
@@ -1292,6 +1325,12 @@ def _build_critic_prompt(feedback):
             "content": (
                 "You are an internal QA critic for an industrial boiler AI. The operator marked an answer as bad, "
                 "but may not know the correct answer. Find reusable reasoning failures, not a one-off apology. "
+                "The FEEDBACK TYPE tells you HOW it was bad, and your correction_rule MUST match it:\n"
+                "- 'unclear': the facts may be fine but the answer was hard to follow. Write a PRESENTATION rule "
+                "(lead with a direct answer, ordered dash-bullet checklist, cut theory/hedging, plain language, "
+                "shorter). Do NOT invent factual corrections that the operator did not raise.\n"
+                "- 'wrong' or 'unsafe': the reasoning or a claim is incorrect. Write a CORRECTNESS rule that names "
+                "the false claim, the missing evidence, and what to assert instead (or 'insufficient evidence').\n"
                 "Return strict JSON with: topic, failure_type, unsupported_claims array, correction_rule, "
                 "future_answer_contract array, severity low|medium|high. Do not include sensitive infrastructure details."
             ),
@@ -1342,42 +1381,90 @@ class LearningMemory:
                   correction_rule TEXT NOT NULL,
                   future_answer_contract TEXT,
                   unsupported_claims TEXT,
-                  source TEXT NOT NULL
+                  source TEXT NOT NULL,
+                  signature TEXT,
+                  hit_count INTEGER NOT NULL DEFAULT 1
                 )
                 """
             )
+            # Migrate older DBs that predate hit_count / signature (CREATE TABLE
+            # IF NOT EXISTS above never adds columns to an existing table).
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(correction_rules)")}
+            if "hit_count" not in cols:
+                conn.execute("ALTER TABLE correction_rules ADD COLUMN hit_count INTEGER NOT NULL DEFAULT 1")
+            if "signature" not in cols:
+                conn.execute("ALTER TABLE correction_rules ADD COLUMN signature TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_correction_rules_topic ON correction_rules(topic)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_correction_rules_created ON correction_rules(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_correction_rules_signature ON correction_rules(signature)")
 
     def store_feedback(self, feedback, critic=None):
         question = feedback.get("question", "")
         answer = feedback.get("answer", "")
         feedback_type = feedback.get("feedback_type", "wrong")
+        note = feedback.get("note", "")
         topic = (critic or {}).get("topic") or _infer_feedback_topic(question, answer)
         rule = (critic or {}).get("correction_rule") or _fallback_correction_rule(question, answer, feedback_type)
         source = "groq" if critic and critic.get("correction_rule") else "fallback"
+        signature = _question_signature(question, topic)
+        now = datetime.now().astimezone().isoformat()
+        contract = json.dumps((critic or {}).get("future_answer_contract", []))
+        unsupported = json.dumps((critic or {}).get("unsupported_claims", []))
+        failure_type = (critic or {}).get("failure_type", "operator_challenged")
+        severity = (critic or {}).get("severity", "medium")
+
         with self.lock, self._connect() as conn:
+            # Repeat feedback on the same question+topic+type escalates one rule
+            # (hit_count) instead of stacking duplicates. unclear and wrong are
+            # tracked separately because they are different failures.
+            existing = conn.execute(
+                """
+                SELECT id, hit_count FROM correction_rules
+                WHERE signature = ? AND feedback_type = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (signature, feedback_type),
+            ).fetchone()
+            if existing:
+                new_count = (existing["hit_count"] or 1) + 1
+                conn.execute(
+                    """
+                    UPDATE correction_rules
+                    SET hit_count = ?, created_at = ?, challenged_answer = ?, operator_note = ?,
+                        failure_type = ?, severity = ?, correction_rule = ?,
+                        future_answer_contract = ?, unsupported_claims = ?, source = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        new_count, now, answer, note, failure_type, severity, rule,
+                        contract, unsupported, source, existing["id"],
+                    ),
+                )
+                return existing["id"], source, rule
+
             cur = conn.execute(
                 """
                 INSERT INTO correction_rules (
                   created_at, feedback_type, topic, question, challenged_answer, operator_note,
-                  failure_type, severity, correction_rule, future_answer_contract, unsupported_claims, source
+                  failure_type, severity, correction_rule, future_answer_contract, unsupported_claims,
+                  source, signature, hit_count
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
-                    datetime.now().astimezone().isoformat(),
+                    now,
                     feedback_type,
                     topic,
                     question,
                     answer,
-                    feedback.get("note", ""),
-                    (critic or {}).get("failure_type", "operator_challenged"),
-                    (critic or {}).get("severity", "medium"),
+                    note,
+                    failure_type,
+                    severity,
                     rule,
-                    json.dumps((critic or {}).get("future_answer_contract", [])),
-                    json.dumps((critic or {}).get("unsupported_claims", [])),
+                    contract,
+                    unsupported,
                     source,
+                    signature,
                 ),
             )
             return cur.lastrowid, source, rule
@@ -1411,7 +1498,10 @@ class LearningMemory:
         for row in rows:
             hay = f"{row['question']} {row['correction_rule']} {row['topic']}"
             overlap = len(q_tokens & _learning_tokens(hay))
-            score = overlap + (3 if row["topic"] == topic else 0)
+            hits = (row["hit_count"] if "hit_count" in row.keys() else None) or 1
+            # Repeatedly-flagged rules get a bounded boost so persistent failures
+            # surface ahead of one-off corrections.
+            score = overlap + (3 if row["topic"] == topic else 0) + min(hits - 1, 3)
             if score > 0:
                 scored.append((score, row))
         scored.sort(key=lambda item: (item[0], item[1]["id"]), reverse=True)
@@ -1423,8 +1513,17 @@ class LearningMemory:
             return ""
         lines = ["KNOWN OPERATOR CORRECTIONS (apply only when relevant):"]
         for i, row in enumerate(rows, 1):
-            lines.append(f"{i}. Topic: {row['topic']} | Failure: {row['failure_type'] or 'operator_challenged'}")
+            hits = (row["hit_count"] if "hit_count" in row.keys() else None) or 1
+            ftype = row["feedback_type"] or "wrong"
+            emphasis = f" | flagged {hits}x — persistent failure, MUST fix" if hits >= 2 else ""
+            lines.append(
+                f"{i}. Topic: {row['topic']} | Type: {ftype} | "
+                f"Failure: {row['failure_type'] or 'operator_challenged'}{emphasis}"
+            )
             lines.append(f"   Rule: {row['correction_rule']}")
+            note = (row["operator_note"] or "").strip()
+            if note:
+                lines.append(f"   Operator specifically said: {note}")
             contract = []
             try:
                 contract = json.loads(row["future_answer_contract"] or "[]")
@@ -3751,11 +3850,14 @@ class AIAnalyst:
         messages.append({
             "role": "user",
             "content": (
+                # Corrections go FIRST so they outrank the deterministic control-loop
+                # anchor below — the small local model tends to parrot whatever it
+                # reads first, so a learned correction must lead, not trail.
+                f"{correction_block}"
                 f"{physics_block}\n\n"
                 f"{control_loop_block}"
                 f"{safety_block}\n\n"
                 f"{historian_block}"
-                f"{correction_block}"
                 f"{manual_block}"
                 f"{incident_block}"
                 f"OPERATOR QUESTION: {question}"

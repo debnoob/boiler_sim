@@ -22,6 +22,7 @@ historian/
 *.db
 *.db-shm
 *.db-wal
+.specstory/
 
 # Node/frontend caches and dependencies
 node_modules/
