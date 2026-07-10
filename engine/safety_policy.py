@@ -356,6 +356,60 @@ def validate_llm_text(text: str, ctx: SafetyContext) -> tuple[str, list[str]]:
     return cleaned or text, blocked_notes
 
 
+# ── Operator-language lint ──────────────────────────────────────────────────
+# Control-room operators read these answers under time pressure. The prompt asks
+# the model for plain words (see STATIC_CORE), but a prompt is a request, not a
+# guarantee — this catches what slips through.
+#
+# We LOG hits, we do not rewrite. An automatic substitution inside a safety
+# recommendation can invert its meaning, and a jargon word an operator can puzzle
+# out is strictly safer than a fluent sentence that tells them the wrong thing.
+BANNED_TERMS = {
+    "pinned": "at the maximum limit",
+    "saturated": "at the maximum limit",
+    "deviated": "different from normal",
+    "excursion": "alarm event",
+    "excursions": "alarm events",
+    "attribution": "main reason",
+    "dynamically responding": "changing",
+    "deterministic hypothesis": "likely cause",
+    "steam demand reduction state": "steam demand is reducing",
+}
+
+_BANNED_PATTERNS = [
+    (term, re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE))
+    for term in BANNED_TERMS
+]
+
+
+def lint_operator_language(text: str) -> list[str]:
+    """Banned jargon terms found in operator-visible text, lowercased and sorted.
+
+    Empty list means the text is clean. Pure function — no I/O, safe to call from
+    tests and from any validation hook.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return []
+    return sorted({term for term, pattern in _BANNED_PATTERNS if pattern.search(text)})
+
+
+def lint_payload_language(payload: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    """Banned terms across the operator-visible string fields of a card payload.
+
+    Values may be strings or lists of strings (evidence, watch items).
+    """
+    hits: set[str] = set()
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str):
+            hits.update(lint_operator_language(value))
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str):
+                    hits.update(lint_operator_language(item))
+    return sorted(hits)
+
+
 def validate_diagnosis_payload(diagnosis: dict[str, Any], ctx: SafetyContext) -> tuple[dict[str, Any], list[str]]:
     notes: list[str] = []
     out = dict(diagnosis)
@@ -375,5 +429,13 @@ def validate_diagnosis_payload(diagnosis: dict[str, Any], ctx: SafetyContext) ->
         }
         if not out.get("recommended_action") and ctx.safe_actions:
             out["recommended_action"] = " | ".join(ctx.safe_actions[:3])
+
+    # Kept out of `notes`: a jargon hit is a wording problem, not a blocked unsafe
+    # action, and must not make the payload look safety-filtered to the caller.
+    jargon = lint_payload_language(
+        out, ("probable_cause", "explanation", "recommended_action", "pattern_note")
+    )
+    if jargon:
+        out["_language_lint"] = jargon
 
     return out, notes

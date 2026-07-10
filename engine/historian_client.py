@@ -1576,8 +1576,8 @@ def answer_maintenance_priority_question(question: str, db_path: str | None = No
             "when": WHEN_NOW,
             "discipline": "Mechanical + Operations",
             "severity": "critical",
-            "impact": "A recorded lift means pressure exceeded the set point — verify reseat before continued operation.",
-            "detail": "Review the pressure excursion, confirm valve reseat, and inspect discharge per site procedure.",
+            "impact": "The valve lifted, so pressure went above the set point. Check the valve closed properly before running again.",
+            "detail": "Review the high-pressure event, confirm the valve closed properly, and inspect the discharge line per site procedure.",
             "evidence": [
                 "Safety valve indicated OPEN during the weekly window",
                 f"peak steam pressure {_fmt_value('steam_pressure', pressure_max)}",
@@ -1587,15 +1587,15 @@ def answer_maintenance_priority_question(question: str, db_path: str | None = No
         items.append({
             "key": "pressure",
             "score": 88 + min(10, int((pressure_max - 13.0) * 10)),
-            "task": "Review steam-pressure excursions",
+            "task": "Review the high-pressure events",
             "when": WHEN_WEEK,
             "discipline": "I&C + Operations",
             "severity": "high",
-            "impact": "High-pressure excursions erode the margin to the 13.5 bar safety-valve set point.",
+            "impact": "High-pressure events reduce the safety margin before the safety valve lifts at 13.5 bar.",
             "detail": "Check pressure transmitter calibration, demand swings, and outlet restrictions.",
             "evidence": [
                 f"peak steam pressure {_fmt_value('steam_pressure', pressure_max)}",
-                "high-pressure excursions reduce operating margin",
+                "high-pressure events reduce the safety margin",
             ],
         })
 

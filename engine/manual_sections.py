@@ -17,6 +17,12 @@ FUEL/EFFICIENCY (money), then the ACTION to take.
 
 from __future__ import annotations
 
+# Single source of truth for operator-visible answer length. Imported by
+# ai_analyst (chat system prompt, unclear-answer correction rule) and
+# deterministic_analyst (chat/control-loop task instructions) so the model never
+# sees two different caps in one prompt.
+MAX_CHAT_ANSWER_WORDS = 120
+
 # ============================================================
 # STATIC CORE — always in the chat system prompt (cache-friendly)
 # ============================================================
@@ -27,13 +33,28 @@ You help operators of one industrial boiler (BOILER-01). Write in very simple
 English so any operator can understand fast. Short sentences. No jargon.
 
 HOW TO ANSWER EVERY QUESTION:
-1. Say the reading (the number the operator gave).
-2. Say if it is safe or not (compare to the limits below).
+1. Start with the direct answer. Say SAFE, WATCH or URGENT when it helps.
+2. Then give the reading and compare it to the normal value and the limit.
 3. Explain WHY in a simple cause-and-effect way (A leads to B leads to C).
-4. Say what to do — the most dangerous action first.
+4. Say what to do — the most dangerous action first. Use dash bullets for actions.
 5. Look at it from 3 sides in this order: SAFETY first, then FUEL/EFFICIENCY
    (money), then the exact ACTION and which team should do it.
 Keep answers short. Always use the real numbers given. Never invent a reading.
+Match the length to the question. A simple reading question needs 2-3 lines, not
+a full report. Do not add headings or section titles.
+
+USE PLAIN WORDS (the operator reads these, not a textbook):
+- say "at the maximum limit", not "pinned" or "saturated"
+- say "different from normal", not "deviated"
+- say "limit", not "cap"
+- say "alarm event" or "high-pressure event", not "excursion"
+- say "main reason", not "attribution"
+- say "steam demand is reducing", not "steam demand reduction state"
+- say "likely cause", not "deterministic hypothesis"
+- say "changing" or "reacting", not "dynamically responding"
+If the operator uses one of these words in the question, do NOT repeat it back.
+Answer with the plain word. Asked "is fuel flow pinned?", reply "Fuel flow is not
+at its maximum limit" — never "fuel flow is not pinned".
 
 NORMAL VALUES (baseline, healthy boiler):
 steam pressure 10 bar | steam temp 180 C | steam flow 2300 kg/hr |
@@ -180,6 +201,75 @@ O2 2%, flue gas 240 C). End with the actions to take and a risk level
 (low / medium / high / critical).
 """.strip(),
 
+    # ── CONCEPT sections ──────────────────────────────────────────────────
+    # Physics relationships, not live playbooks. Routed only when the caller has
+    # already decided the question is conceptual (route_manual(concept=True)), so
+    # a live "stack loss is high now" still pulls the situational blocks above.
+    "concept_combustion": """
+TOPIC (CONCEPT): EXCESS AIR -> O2 -> FLUE GAS MASS -> STACK LOSS
+The chain, step by step. Fuel needs air to burn. Air is mostly nitrogen, which does
+NOT burn. If you blow in MORE air than the fuel needs (this extra is called excess
+air) -> the oxygen left over shows up as a HIGHER O2% in the flue gas -> that extra
+air is a bigger MASS of hot gas leaving the boiler -> all of it was heated by your
+fuel and is thrown up the chimney -> stack loss rises -> efficiency falls.
+So high O2 does not waste heat by itself. High O2 is the SIGN that you are heating
+air you did not need.
+Too LITTLE air is the opposite danger: the fuel cannot burn fully -> carbon monoxide
+(CO) and soot form -> unsafe. So aim for the sweet spot: about 3% O2. Enough air to
+burn all the fuel, not so much that you heat air for nothing.
+Air-to-fuel ratio is about 11 to 1 for this boiler.
+TURNDOWN: the range between the lowest and highest firing rate the burner can hold
+steadily. Good turndown lets the boiler follow the load smoothly instead of switching
+on and off, which wastes fuel on every restart.
+FURNACE DRAFT: the small negative pressure that pulls flue gas out through the stack.
+Too little draft -> gas leaks into the boiler house (danger). Too much draft -> gas is
+pulled out too fast, carrying heat with it -> efficiency falls.
+""".strip(),
+
+    "concept_steam": """
+TOPIC (CONCEPT): SATURATION, LATENT HEAT, DRYNESS, CARRYOVER
+SATURATION: at any given pressure, water boils at ONE fixed temperature. This is the
+saturation temperature. Raise the pressure and the boiling temperature rises with it.
+Near 10 bar water boils at about 180 C — that is why the normal steam pressure (10
+bar) and normal steam temperature (180 C) belong together. They are not two separate
+numbers. In the drum, the water and the steam sit at this same temperature.
+So if pressure rises, steam temperature follows it up. If steam temperature moves far
+away from the saturation temperature for the current pressure, suspect a sensor fault.
+LATENT HEAT: to turn boiling water into steam takes a LOT of extra heat, but the
+temperature does NOT rise while it happens. That hidden (latent) heat is what the
+steam carries to the factory and gives back when it condenses.
+DRYNESS AND SUPERHEAT: wet steam still carries water droplets (low dryness). Heating
+steam AFTER it has boiled makes it superheated (dry). Dry steam holds more usable
+energy and protects pipes and turbines from water damage.
+CARRYOVER, PRIMING, FOAMING: if drum level is too high, or the boiler water is dirty
+or foaming, water droplets get swept into the steam line. This is carryover (a sudden
+slug of water is called priming). It wets the steam and can cause water hammer, which
+can break pipes. Keep the level in band and keep the water clean.
+""".strip(),
+
+    "concept_water": """
+TOPIC (CONCEPT): SHRINK AND SWELL, BLOWDOWN / TDS, ECONOMIZER, DEAERATOR
+SHRINK AND SWELL: just after a load change, the drum level gauge can move the WRONG
+way for a few seconds. Trust the cause, not the first reading.
+- SWELL: the factory suddenly asks for more steam -> pressure drops -> the steam
+  bubbles inside the water expand -> the level reads HIGH, even though there is now
+  actually LESS water in the drum.
+- SHRINK: steam demand suddenly falls -> pressure rises -> the bubbles collapse ->
+  the level reads LOW, even though there is actually MORE water in the drum.
+So do NOT chase the level right after a big load swing. If you add feedwater during a
+swell you will overfill the drum. Let it settle, and use steam-flow feedforward so the
+control system leads the change instead of reacting to a false level.
+BLOWDOWN AND TDS: when water boils away it leaves its dissolved solids behind, so the
+solids (measured as TDS) build up in the drum. Blowdown drains a little drum water to
+carry them out. Too little blowdown -> scale on the tubes and foaming/carryover.
+Too much blowdown -> you throw away hot treated water, wasting heat and money.
+ECONOMIZER: a heat exchanger that uses the hot flue gas to pre-heat the feedwater
+before it enters the drum. It recovers heat that would have gone up the chimney, so
+flue gas leaves cooler and efficiency rises.
+DEAERATOR: heats the feedwater and strips out dissolved oxygen, because oxygen in the
+water corrodes (rusts) the tubes from the inside.
+""".strip(),
+
     "general": """
 TOPIC: GENERAL REASONING
 Key idea: fuel makes heat; that heat should go into the water to make steam.
@@ -213,17 +303,48 @@ _ROUTES: list[tuple[str, tuple[str, ...]]] = [
     ("flame",        ("flame", "ignition", "esd", "shutdown")),
 ]
 
+# Concept routes are checked ONLY when the caller passes concept=True, i.e. the
+# question asks what something means rather than what the plant is doing. Keeping
+# them behind that flag stops a live question ("stack loss is high right now")
+# from pulling textbook prose instead of its situational playbook — several of
+# these keywords ("excess air", "stack loss", "draft") also appear in live asks.
+_CONCEPT_ROUTES: list[tuple[str, tuple[str, ...]]] = [
+    # "steam temperature"/"steam temp" are here because the saturation question is
+    # usually asked without the word "saturation" ("why does steam temperature
+    # follow pressure?"). Safe: a LIVE steam-temp question never sets concept=True,
+    # and a bare value read-out is served by the VALUE route before routing happens.
+    ("concept_steam",      ("saturation", "saturated", "boiling point", "boiling temperature",
+                            "boiling", "latent heat", "dryness", "dry steam", "wet steam",
+                            "superheat", "carryover", "carry over", "priming", "foaming",
+                            "water hammer", "steam temperature", "steam temp")),
+    ("concept_water",      ("shrink", "swell", "blowdown", "blow down", "tds",
+                            "dissolved solids", "economizer", "economiser",
+                            "deaerator", "deaeration", "feedforward", "feed forward")),
+    ("concept_combustion", ("excess air", "excess-air", "air to fuel", "air-fuel",
+                            "air fuel ratio", "stack loss", "turndown", "turn down",
+                            "furnace draft", "draught", " draft")),
+]
+
 MAX_SECTIONS = 2  # keep the prompt lean for num_ctx=4096
 
 
-def route_manual(question: str) -> str:
+def route_manual(question: str, concept: bool = False) -> str:
     """
     Return the 1-2 most relevant manual blocks for a question, as a prompt block.
     Deterministic keyword routing — no embeddings, no network, no vector DB — so it
     is instant on CPU and never 'misses' a chunk the way similarity search can.
+
+    concept=True adds the physics-relationship sections and checks them FIRST, so
+    they win the MAX_SECTIONS cap. Callers pass it when the question asks what a
+    term means rather than what the plant is doing right now. Defaults to False so
+    diagnosis and what-if callers keep their existing situational routing.
     """
     q = f" {(question or '').lower()} "
     keys: list[str] = []
+    if concept:
+        for key, words in _CONCEPT_ROUTES:
+            if any(w in q for w in words):
+                keys.append(key)
     for key, words in _ROUTES:
         if any(w in q for w in words):
             keys.append(key)

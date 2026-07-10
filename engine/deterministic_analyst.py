@@ -24,6 +24,8 @@ import statistics
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from manual_sections import MAX_CHAT_ANSWER_WORDS
+
 # ============================================================
 # BASELINES  (mirror of ai_analyst.py so this module is standalone)
 # ============================================================
@@ -951,14 +953,14 @@ def format_brief_for_llm(brief: PhysicsBrief, context: str = "diagnosis") -> str
             "Your task: Answer the operator's control-loop question from the CONTROL LOOP "
             "block that follows. Judge stability and actuator response ONLY from that block — "
             "the plant-state label above is background, not a stability verdict. "
-            "Keep the response under 180 words."
+            f"Keep the response under {MAX_CHAT_ANSWER_WORDS} words."
         )
     elif context in ("chat", "efficiency"):
         lines.append(
             "Your task: Answer the operator's question using ONLY the pre-computed findings "
             "above. Reference specific sensor values and the loss breakdown provided. "
             "Do not provide generic boiler theory — cite the actual numbers. "
-            "Keep the response under 180 words. Use bullet lists for recommendations."
+            f"Keep the response under {MAX_CHAT_ANSWER_WORDS} words. Use bullet lists for recommendations."
         )
 
     lines.append("══════════════════════════════════════════════════════════════════════")

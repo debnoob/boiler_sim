@@ -1,18 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { AlertCircle, BookOpen, Check, CheckCircle, ChevronLeft, ChevronRight, Cpu, FileText, FlaskConical, Loader2, RefreshCw, Send, Upload, Wrench } from 'lucide-react';
+import { AlertCircle, BookOpen, Check, CheckCircle, ChevronLeft, ChevronRight, Cpu, FileText, Flag, FlaskConical, HelpCircle, Loader2, MessageSquareText, MoreHorizontal, RefreshCw, SearchX, Send, ShieldAlert, Upload, Wrench, X } from 'lucide-react';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
 import { formatRich, preprocessMessage, normalizeToString } from '@/lib/utils';
 import type { ChatMessage, DiagnosisPayload, AiResponsePayload } from '@/types/telemetry';
-
-const THINKING_STEPS = [
-  { label: 'Telemetry', detail: 'Reading last 60s of live sensor data…' },
-  { label: 'Correlation', detail: 'Cross-referencing sensor deviations…' },
-  { label: 'Reasoning', detail: 'Qwen3.5 is processing…' },
-  { label: 'Drafting', detail: 'Composing response…' },
-];
 
 const SEVERITY_BADGE: Record<string, string> = {
   critical: '#ef4444', high: '#f97316', warning: '#f59e0b',
@@ -32,10 +25,10 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
   const publish = usePublish();
   const { chatMessages, aiStatus, addChatMessage, woCount, tags, anomalyScore, mode } = useNexusStore();
   const [input, setInput] = useState('');
-  const [thinkingPhase, setThinkingPhase] = useState(0);
   const [thinkingDots, setThinkingDots] = useState('');
   const [chipsScrollLeft, setChipsScrollLeft] = useState(0);
   const [chipsScrollable, setChipsScrollable] = useState(false);
+  const [morePromptsOpen, setMorePromptsOpen] = useState(false);
   const [uploadState, setUploadState] = useState<UploadState>('idle');
   const [uploadLabel, setUploadLabel] = useState('');
   const [kbDocs, setKbDocs] = useState<KbDoc[]>([]);
@@ -54,16 +47,14 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
     }
   }, [chatMessages]);
 
-  // Thinking phase cycle
+  // Compact analyzing indicator
   useEffect(() => {
     if (showThinking) {
       phaseTimerRef.current = setInterval(() => {
-        setThinkingPhase(p => (p + 1) % THINKING_STEPS.length);
         setThinkingDots(d => d.length >= 3 ? '' : d + '.');
       }, 900);
     } else {
       if (phaseTimerRef.current) clearInterval(phaseTimerRef.current);
-      setThinkingPhase(0);
       setThinkingDots('');
     }
     return () => { if (phaseTimerRef.current) clearInterval(phaseTimerRef.current); };
@@ -174,8 +165,25 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
     setChipsScrollLeft(chipsRef.current?.scrollLeft ?? 0);
   }
 
+  const primaryQuickPrompts = [
+    ['Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
+    ['Explain anomaly', 'Explain the latest anomaly using current sensor values and baseline differences.'],
+    ['OEE status', 'Calculate current shift OEE and show availability, thermal performance, and quality factors.'],
+  ];
+  const secondaryQuickPrompts = [
+    ['Compare baseline', 'Compare current live telemetry against normal operating baseline and call out deviations.'],
+    ['Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
+    ['Maintenance priority', 'What should the maintenance team prioritize this week, in order?'],
+  ];
+
   const atStart = chipsScrollLeft <= 4;
   const atEnd = chipsRef.current ? chipsScrollLeft >= (chipsRef.current.scrollWidth - chipsRef.current.clientWidth - 4) : true;
+  const livePressure = tags?.steam_pressure;
+  const liveEfficiency = tags?.efficiency;
+  const pressureTone = livePressure == null ? 'neutral' : livePressure > 13 ? 'crit' : livePressure > 12 ? 'warn' : 'ok';
+  const efficiencyTone = liveEfficiency == null ? 'neutral' : liveEfficiency < 75 ? 'crit' : liveEfficiency < 82 ? 'warn' : 'ok';
+  const pressureText = livePressure == null ? '--' : `${livePressure.toFixed(1)} bar`;
+  const efficiencyText = liveEfficiency == null ? '--' : `${liveEfficiency.toFixed(1)}%`;
 
   return (
     <div className={`ai-chat-shell ${aiStatus === 'analyzing' ? 'ai-chat-shell-active' : ''} ${variant === 'floating' ? 'ai-chat-shell-floating' : ''}`}>
@@ -183,23 +191,16 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
 
         {/* Header */}
         <div className="ai-widget-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ position: 'relative', width: 38, height: 38 }}>
-              <div style={{ position: 'absolute', inset: 0, borderRadius: 10, background: 'var(--accent)', opacity: 0.18, animation: 'ai-breathe 4.5s ease-in-out infinite' }} />
-              <div style={{ position: 'relative', width: 38, height: 38, borderRadius: 10, border: '1.5px solid var(--accent)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-text)' }}>
-                <Cpu size={17} strokeWidth={2.2} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <div style={{ position: 'relative', width: 30, height: 30 }}>
+              <div style={{ position: 'relative', width: 30, height: 30, borderRadius: 7, border: '1.5px solid var(--accent)', background: 'var(--ai-chip-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--accent-text)' }}>
+                <Cpu size={15} strokeWidth={2.2} />
               </div>
             </div>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--tx-primary)', letterSpacing: '-0.02em' }}>Nexus AI</div>
-              <div className="ai-model-pill" style={{ marginTop: 3 }}>
-                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#4ade80', display: 'inline-block' }} />
-                <span>Qwen3.5 analyst</span>
-              </div>
-              <div className="ai-header-context">Boiler Unit 01 • Live telemetry</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--tx-primary)', letterSpacing: '0' }}>Nexus AI</div>
             </div>
           </div>
-          {/* Status badge */}
           {aiStatus === 'analyzing' ? (
             <div className="status-pill warn">
               <RefreshCw size={11} color="#fbbf24" />
@@ -218,11 +219,11 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
 
         <div className="ai-shimmer-line" />
 
-        {variant === 'floating' && (
+        {false && variant === 'floating' && (
           <div className="ai-live-context" aria-label="Live boiler context">
             <LiveContextItem label="Mode" value={mode} tone={mode === 'NORMAL' ? 'ok' : mode === 'FAULT' ? 'crit' : 'warn'} />
-            <LiveContextItem label="PRS" value={tags ? `${tags.steam_pressure.toFixed(1)} bar` : '--'} tone={!tags ? 'neutral' : tags.steam_pressure > 13 ? 'crit' : tags.steam_pressure > 12 ? 'warn' : 'ok'} />
-            <LiveContextItem label="EFF" value={tags ? `${tags.efficiency.toFixed(1)}%` : '--'} tone={!tags ? 'neutral' : tags.efficiency < 75 ? 'crit' : tags.efficiency < 82 ? 'warn' : 'ok'} />
+            <LiveContextItem label="PRS" value={pressureText} tone={pressureTone} />
+            <LiveContextItem label="EFF" value={efficiencyText} tone={efficiencyTone} />
             <LiveContextItem label="ANOM" value={`${anomalyScore}%`} tone={anomalyScore > 70 ? 'crit' : anomalyScore > 30 ? 'warn' : 'ok'} />
           </div>
         )}
@@ -236,7 +237,6 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
                 key={msg.id}
                 msg={msg}
                 priorQuestion={priorUser?.content || ''}
-                thinkingPhase={thinkingPhase}
                 thinkingDots={thinkingDots}
                 woCount={woCount}
               />
@@ -245,24 +245,18 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
         </div>
 
         {/* Knowledge Base panel */}
-        <div style={{ borderTop: '1px solid var(--ai-bubble-bd)', background: 'var(--ai-chip-bg)' }}>
+        <div className="ai-kb-drawer">
           <button
             onClick={() => setKbOpen(o => !o)}
-            style={{
-              width: '100%', display: 'flex', alignItems: 'center', gap: 6,
-              padding: '6px 14px', background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--tx-secondary)', fontSize: 11, fontWeight: 600, letterSpacing: '0.04em',
-            }}
+            className="ai-kb-toggle"
+            title="Manual knowledge base"
           >
             <BookOpen size={13} />
-            <span>MANUALS</span>
+            <span>Manuals</span>
             {kbDocs.length > 0 && (
-              <span style={{
-                marginLeft: 4, padding: '1px 6px', borderRadius: 99, fontSize: 10, fontWeight: 700,
-                background: 'rgba(251,191,36,0.15)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.3)',
-              }}>{kbDocs.length}</span>
+              <span className="ai-kb-count">{kbDocs.length}</span>
             )}
-            <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.5 }}>{kbOpen ? '▲' : '▼'}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 10, opacity: 0.5 }}>{kbOpen ? 'Hide' : 'Show'}</span>
           </button>
           {kbOpen && (
             <div style={{ padding: '0 14px 8px' }}>
@@ -303,24 +297,27 @@ export function AiChat({ variant = 'panel' }: AiChatProps) {
             </>
           )}
           <div ref={chipsRef} className="flex gap-2 overflow-x-auto hide-scrollbar" onScroll={updateChipsScroll}>
-            {[
-              ['Health check', 'Run a full health check on the boiler right now. Anything I should worry about?'],
-              ['Explain anomaly', 'Explain the latest anomaly using current sensor values and baseline differences.'],
-              ['Compare baseline', 'Compare current live telemetry against normal operating baseline and call out deviations.'],
-              ['OEE status', 'Calculate current shift OEE and show availability, thermal performance, and quality factors.'],
-              ['Predict failure', 'Based on the live telemetry, what is most likely to fail next and when should we intervene?'],
-              ['Maintenance priority', 'What should the maintenance team prioritize this week, in order?'],
-            ].map(([label, q]) => (
+            {primaryQuickPrompts.map(([label, q]) => (
               <button key={label} className="ai-chip" onClick={() => sendQuick(q)}>{label}</button>
             ))}
-            <button className="ai-chip" onClick={sendShiftReport}>Generate shift report</button>
+            <button className="ai-chip ai-chip-more" onClick={() => setMorePromptsOpen(o => !o)} title="More quick prompts">
+              <MoreHorizontal size={14} />
+              <span>More</span>
+            </button>
           </div>
+          {morePromptsOpen && (
+            <div className="ai-more-prompts">
+              {secondaryQuickPrompts.map(([label, q]) => (
+                <button key={label} onClick={() => { sendQuick(q); setMorePromptsOpen(false); }}>{label}</button>
+              ))}
+              <button onClick={() => { sendShiftReport(); setMorePromptsOpen(false); }}>Shift report</button>
+            </div>
+          )}
         </div>
 
         {/* Input */}
         <div style={{ padding: '8px 14px 12px', background: 'var(--ai-msg-bg)' }}>
           <div className="ai-input-wrap">
-            <span style={{ fontSize: 12, color: 'var(--tx-muted)', flexShrink: 0 }}>AI</span>
             <textarea
               rows={1}
               placeholder="Ask about the plant…"
@@ -412,13 +409,11 @@ function stringifyFeedbackAnswer(msg: ChatMessage) {
 function ChatBubble({
   msg,
   priorQuestion,
-  thinkingPhase,
   thinkingDots,
   woCount,
 }: {
   msg: ChatMessage;
   priorQuestion: string;
-  thinkingPhase: number;
   thinkingDots: string;
   woCount: number;
 }) {
@@ -430,7 +425,7 @@ function ChatBubble({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const canSendFeedback = Boolean(priorQuestion) && !['user', 'thinking'].includes(msg.type);
 
-  const sendFeedback = (feedbackType: 'wrong' | 'unsafe' | 'missing_evidence' | 'unclear') => {
+  const sendFeedback = (feedbackType: 'wrong' | 'unsafe' | 'missing_evidence' | 'unclear' | 'custom', note = '') => {
     if (!canSendFeedback) return;
     publish(AI_FEEDBACK_TOPIC, {
       feedback_type: feedbackType,
@@ -438,11 +433,11 @@ function ChatBubble({
       answer: stringifyFeedbackAnswer(msg),
       answer_type: msg.type,
       message_id: msg.id,
+      note,
       timestamp: new Date().toISOString(),
       context: {
         mode,
         anomaly_score: anomalyScore,
-        tags,
       },
     });
     setFeedbackSent(feedbackType);
@@ -471,36 +466,9 @@ function ChatBubble({
     return (
       <div className="flex items-start gap-2 slide-in">
         <AiAvatar />
-        <div className="ai-bubble ai-thinking-card" style={{ padding: '10px 14px', minWidth: 210 }}>
-          {/* Reasoning header — like Claude */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24', display: 'inline-block', animation: 'pulseDot 1s ease-in-out infinite' }} />
-            <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', letterSpacing: '0.06em', textTransform: 'uppercase' }}>Reasoning{thinkingDots}</span>
-          </div>
-          {/* Step list */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {THINKING_STEPS.map((s, i) => (
-              <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 11.5 }}>
-                <span style={{
-                  width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 9, fontWeight: 700,
-                  background: i < thinkingPhase ? 'rgba(74,222,128,0.15)' : i === thinkingPhase ? 'rgba(251,191,36,0.15)' : 'transparent',
-                  border: `1px solid ${i < thinkingPhase ? '#4ade80' : i === thinkingPhase ? '#fbbf24' : 'var(--bd-inner)'}`,
-                  color: i < thinkingPhase ? '#4ade80' : i === thinkingPhase ? '#fbbf24' : 'var(--tx-muted)',
-                }}>
-                  {i < thinkingPhase ? <Check size={9} strokeWidth={3} /> : i === thinkingPhase ? '…' : ''}
-                </span>
-                <span style={{
-                  color: i < thinkingPhase ? '#4ade80' : i === thinkingPhase ? 'var(--tx-primary)' : 'var(--tx-muted)',
-                  fontWeight: i === thinkingPhase ? 600 : 400,
-                }}>{s.label}</span>
-                {i === thinkingPhase && (
-                  <span style={{ color: 'var(--tx-muted)', fontSize: 10.5, fontStyle: 'italic' }}>{s.detail}</span>
-                )}
-              </div>
-            ))}
-          </div>
+        <div className="ai-bubble ai-thinking-card ai-thinking-compact">
+          <span className="ai-thinking-dot" />
+          <span>Analyzing live telemetry{thinkingDots}</span>
         </div>
       </div>
     );
@@ -563,10 +531,12 @@ function ChatBubble({
   }
 
   if (msg.type === 'learning_feedback') {
+    const data = msg.data as AiResponsePayload | undefined;
+    const accepted = data?.accepted !== false;
     return (
-      <div className="ai-feedback-toast slide-in">
-        <Check size={13} strokeWidth={2.8} />
-        <span>Feedback noted</span>
+      <div className={`ai-feedback-toast ${accepted ? '' : 'ignored'} slide-in`}>
+        {accepted ? <Check size={13} strokeWidth={2.8} /> : <X size={13} strokeWidth={2.8} />}
+        <span>{accepted ? 'Feedback noted' : 'Feedback ignored'}</span>
       </div>
     );
   }
@@ -612,19 +582,72 @@ function FeedbackControls({
 }: {
   canSend: boolean;
   sent: string | null;
-  onSend: (feedbackType: 'wrong' | 'unsafe' | 'missing_evidence' | 'unclear') => void;
+  onSend: (feedbackType: 'wrong' | 'unsafe' | 'missing_evidence' | 'unclear' | 'custom', note?: string) => void;
 }) {
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customNote, setCustomNote] = useState('');
+
   if (!canSend) return null;
   if (sent) {
-    return <div className="ai-feedback-sent">Feedback sent: {sent.replace('_', ' ')}</div>;
+    return <div className="ai-feedback-sent">{sent === 'custom' ? 'Feedback sent' : 'Flag sent'}</div>;
   }
+
+  const submitCustom = () => {
+    const note = customNote.trim();
+    if (!note) return;
+    onSend('custom', note);
+    setCustomNote('');
+    setCustomOpen(false);
+  };
+
   return (
-    <div className="ai-feedback-row" aria-label="AI answer feedback">
-      <span className="ai-feedback-label">Flag</span>
-      <button type="button" onClick={() => onSend('wrong')}>Wrong</button>
-      <button type="button" onClick={() => onSend('missing_evidence')}>Missing evidence</button>
-      <button type="button" onClick={() => onSend('unsafe')}>Unsafe</button>
-      <button type="button" onClick={() => onSend('unclear')}>Unclear</button>
+    <div className="ai-feedback-block" aria-label="AI answer feedback">
+      <div className="ai-feedback-row">
+        <div className="ai-feedback-buttons">
+          <span className="fb-tip" data-tip="Wrong">
+            <button type="button" onClick={() => onSend('wrong')} aria-label="Flag as wrong"><Flag size={12} /></button>
+          </span>
+          <span className="fb-tip" data-tip="Missing evidence">
+            <button type="button" onClick={() => onSend('missing_evidence')} aria-label="Flag missing evidence"><SearchX size={12} /></button>
+          </span>
+          <span className="fb-tip" data-tip="Unsafe">
+            <button type="button" onClick={() => onSend('unsafe')} aria-label="Flag unsafe advice"><ShieldAlert size={12} /></button>
+          </span>
+          <span className="fb-tip" data-tip="Unclear">
+            <button type="button" onClick={() => onSend('unclear')} aria-label="Flag as unclear"><HelpCircle size={12} /></button>
+          </span>
+          <span className="fb-tip" data-tip="Custom feedback">
+            <button type="button" onClick={() => setCustomOpen(o => !o)} aria-label="Write custom feedback"><MessageSquareText size={12} /></button>
+          </span>
+        </div>
+      </div>
+      {customOpen && (
+        <div className="ai-custom-feedback">
+          <textarea
+            rows={1}
+            maxLength={280}
+            value={customNote}
+            placeholder="How should similar boiler answers change?"
+            onChange={(e) => setCustomNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitCustom();
+              }
+              if (e.key === 'Escape') {
+                setCustomOpen(false);
+                setCustomNote('');
+              }
+            }}
+          />
+          <button type="button" className="ai-custom-feedback-cancel" onClick={() => { setCustomOpen(false); setCustomNote(''); }} aria-label="Cancel custom feedback">
+            <X size={12} />
+          </button>
+          <button type="button" className="ai-custom-feedback-send" onClick={submitCustom} disabled={!customNote.trim()} aria-label="Send custom feedback">
+            <Send size={12} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -682,7 +705,7 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
         {deviation && (
           <div className="ai-deviation-strip">
             <div>
-              <span>Primary deviation</span>
+              <span>Biggest change from normal</span>
               <strong>{primarySensor?.sensor || primarySensor?.tag || 'Sensor'}</strong>
             </div>
             <div className="ai-deviation-bar"><i style={{ width: `${Math.min(Math.abs(deviation.percent), 100)}%`, background: badgeBg }} /></div>
@@ -692,7 +715,7 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
         {data.pattern_note && (
           <div style={{ display: 'flex', gap: 8, background: 'var(--pattern-bg)', border: '1px solid var(--pattern-bd)', borderRadius: 8, padding: '8px 10px', marginBottom: 8, fontSize: 11.5, color: 'var(--pattern-tx)', lineHeight: 1.5 }}>
             <span style={{ color: 'var(--pattern-icon)', fontSize: 11, marginTop: 2, flexShrink: 0 }}>↻</span>
-            <span><span style={{ fontWeight: 700, color: 'var(--pattern-label)' }}>Pattern detected:</span> {normalizeToString(data.pattern_note)}</span>
+            <span><span style={{ fontWeight: 700, color: 'var(--pattern-label)' }}>Seen before:</span> {normalizeToString(data.pattern_note)}</span>
           </div>
         )}
         {data.deviated_sensors && data.deviated_sensors.length > 0 && (
@@ -706,7 +729,7 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
                   <span style={{ color: 'var(--tx-primary)' }}>{s.sensor || s.tag || 'Unknown'}</span>
                   <span style={{ color: 'var(--tx-muted)' }}>•</span>
                   <span style={{ fontWeight: 600, color: 'var(--tx-primary)' }}>{s.value ?? '--'}</span>
-                  {s.baseline && <span style={{ color: 'var(--tx-secondary)', fontSize: 10 }}>(baseline: {s.baseline})</span>}
+                  {s.baseline && <span style={{ color: 'var(--tx-secondary)', fontSize: 10 }}>(normal: {s.baseline})</span>}
                 </div>
               );
             })}
@@ -714,7 +737,7 @@ function DiagnosisCard({ data, woCount, ts }: { data: DiagnosisPayload; woCount:
         )}
         {data.recommended_action != null && (
           <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--bd-inner)', borderRadius: 8, padding: '8px 10px', marginTop: 8 }}>
-            <div style={{ fontSize: 9, color: 'var(--tx-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: 2 }}>Recommended Action</div>
+            <div style={{ fontSize: 9, color: 'var(--tx-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: 2 }}>Action</div>
             <p style={{ color: 'var(--tx-primary)', fontSize: 12, whiteSpace: 'pre-line' }}>{normalizeToString(data.recommended_action)}</p>
           </div>
         )}

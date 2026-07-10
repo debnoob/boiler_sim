@@ -130,6 +130,10 @@ export interface AiResponsePayload {
   fact_contract?: Record<string, unknown>;
   interpretation_contract?: Record<string, unknown>;
   validation_issues?: string[];
+  accepted?: boolean;
+  reason?: string;
+  rule_id?: number;
+  source?: string;
   scenario?: string;
   risk_level?: string;
   steps?: Array<{ step?: number; event?: string; consequence?: string }>;

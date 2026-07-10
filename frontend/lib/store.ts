@@ -405,7 +405,6 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
 
   setDiagnosis: (data) => {
     const state = get();
-    state.removeChatMessage('thinking');
     const woCount = state.woCount + 1;
     const msg: ChatMessage = {
       id: `diag-${Date.now()}`,
@@ -415,7 +414,7 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       data,
     };
     set((s) => {
-      const messages = [...s.chatMessages.filter(m => m.id !== 'thinking'), msg];
+      const messages = [...s.chatMessages, msg];
       while (messages.length > MAX_CHAT_MSGS) messages.shift();
       return { chatMessages: messages, woCount };
     });
@@ -431,7 +430,9 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
           : data.type === 'maintenance_priorities' ? 'maintenance_priorities'
           : data.type === 'learning_feedback' ? 'learning_feedback'
           : 'ai',
-        content: data.type === 'learning_feedback' ? 'Feedback noted' : data.answer || data.response || '',
+        content: data.type === 'learning_feedback'
+          ? (data.accepted === false ? 'Feedback ignored' : 'Feedback noted')
+          : data.answer || data.response || '',
         timestamp: new Date().toLocaleTimeString(),
         data,
       };
