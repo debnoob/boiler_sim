@@ -193,6 +193,56 @@ def connect(db_path: str | None = None):
         conn.close()
 
 
+def check_integrity(db_path: str | None = None) -> tuple[bool, str]:
+    """Run SQLite's own integrity check before trusting an existing database file.
+
+    A malformed SQLite file does not fail loudly on open — basic statements like
+    CREATE TABLE IF NOT EXISTS raise sqlite3.DatabaseError immediately, but only
+    once something tries to touch the file, and callers were only catching that
+    around read queries (see the historian-question fallback below). A corrupt
+    file could sit there for days before anyone noticed a symptom. This is a
+    plain connection with no WAL pragma, on purpose: a file too damaged to accept
+    PRAGMA journal_mode=WAL should still fail this check, not fail later.
+    """
+    path = db_path or default_db_path()
+    if not Path(path).expanduser().exists():
+        return True, "no existing database file"
+    try:
+        conn = sqlite3.connect(path, timeout=30)
+        try:
+            row = conn.execute("PRAGMA integrity_check(1)").fetchone()
+            detail = row[0] if row else "no result from integrity_check"
+            return detail == "ok", detail
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        return False, str(exc)
+
+
+def quarantine_corrupt_db(db_path: str | None = None) -> str:
+    """Move a corrupt database (and its WAL/SHM sidecars) aside so a fresh one
+    can be created without deleting the evidence.
+
+    The sidecars move with the main file on purpose: an earlier corruption in
+    this project left a `-wal`/`-shm` pair with no main `.db` file next to it,
+    because only the main file had been moved. Recovery from a quarantined file
+    is still possible with `sqlite3 <file> ".recover"`.
+    """
+    path = Path((db_path or default_db_path())).expanduser()
+    stamp = None
+    try:
+        stamp = int(path.stat().st_mtime)
+    except OSError:
+        pass
+    suffix = f".corrupt.{stamp}" if stamp is not None else ".corrupt"
+    quarantined = str(path) + suffix
+    for sidecar_suffix in ("", "-wal", "-shm"):
+        src = Path(str(path) + sidecar_suffix)
+        if src.exists():
+            src.rename(quarantined + sidecar_suffix)
+    return quarantined
+
+
 def init_db(db_path: str | None = None) -> None:
     tag_columns = ",\n            ".join(f"{tag} REAL" for tag in NUMERIC_TAGS)
     rollup_columns = ",\n                ".join(

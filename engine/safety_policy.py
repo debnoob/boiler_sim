@@ -374,6 +374,8 @@ BANNED_TERMS = {
     "dynamically responding": "changing",
     "deterministic hypothesis": "likely cause",
     "steam demand reduction state": "steam demand is reducing",
+    "reseated": "closed properly",
+    "reseat": "close properly",
 }
 
 _BANNED_PATTERNS = [

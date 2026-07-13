@@ -18,11 +18,13 @@ from typing import Any
 import paho.mqtt.client as mqtt
 
 from historian_client import (
+    check_integrity,
     default_db_path,
     init_db,
     insert_event,
     insert_heartbeat,
     prune_old_data,
+    quarantine_corrupt_db,
 )
 
 
@@ -54,7 +56,30 @@ class HistorianService:
         self.events_written = 0
         self.last_prune = 0.0
         self.db_path = default_db_path()
+        self.quarantine_info = self._check_and_quarantine_if_corrupt()
         init_db(self.db_path)
+
+    def _check_and_quarantine_if_corrupt(self) -> dict[str, Any] | None:
+        """Refuse to write into a corrupt database. A malformed SQLite file does
+        not fail until something touches it, so an unnoticed corruption can sit
+        for days answering every historical question with silence — this is
+        what happened here. Quarantining instead of overwriting keeps the file
+        recoverable with `sqlite3 <file> ".recover"`.
+        """
+        ok, detail = check_integrity(self.db_path)
+        if ok:
+            return None
+        quarantined = quarantine_corrupt_db(self.db_path)
+        print("=" * 60)
+        print("[Historian] CORRUPT DATABASE DETECTED — refusing to write into it")
+        print(f"[Historian]   path      : {self.db_path}")
+        print(f"[Historian]   detail    : {detail}")
+        print(f"[Historian]   moved to  : {quarantined}")
+        print("[Historian] Starting a fresh, empty database. History before this")
+        print("[Historian] point is not lost — recover it manually with:")
+        print(f'[Historian]   sqlite3 "{quarantined}" ".recover" | sqlite3 recovered.db')
+        print("=" * 60)
+        return {"detail": detail, "quarantined_path": quarantined}
 
     def on_connect(self, client, userdata, flags, rc):
         if rc != 0:
@@ -111,6 +136,11 @@ class HistorianService:
             "timestamp": time.time(),
             **extra,
         }
+        # Retained (qos=1, retain=True) so a dashboard connecting after startup
+        # still sees a past corruption event, not just services that were
+        # listening at the exact moment it happened.
+        if self.quarantine_info:
+            body["recovered_from_corruption"] = self.quarantine_info
         self.client.publish(TOPIC_STATUS, json.dumps(body), qos=1, retain=True)
 
     def run(self):

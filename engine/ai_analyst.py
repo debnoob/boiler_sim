@@ -1422,12 +1422,35 @@ def call_groq_chat(
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+        # Qwen3 (and other reasoning models) default to reasoning_format="raw",
+        # which embeds <think>...</think> in the message content. That content is
+        # not valid JSON, so Groq's JSON-mode validator rejects the whole request
+        # with a 400 ("Failed to validate JSON. See failed_generation") — every
+        # feedback critic/relevance call was failing this way and silently
+        # dropping to the deterministic fallback rule. Groq requires reasoning to
+        # be disabled or hidden under JSON mode; reasoning_effort="none" also keeps
+        # these small classification calls inside their token budget.
+        # Docs: https://console.groq.com/docs/reasoning
+        body["reasoning_effort"] = "none"
+        body["reasoning_format"] = "hidden"
 
     try:
         resp = requests.post(GROQ_CHAT_URL, headers=headers, json=body, timeout=timeout)
         if resp.status_code == 200:
             return _strip_think(resp.json()["choices"][0]["message"]["content"])
         print(f"[AI Analyst] Groq error {resp.status_code}: {resp.text[:160]}")
+        # A json_mode rejection can also come from a model that does not accept the
+        # reasoning params (e.g. an overridden non-Qwen critic model). Retry once
+        # as a plain request and let the caller coerce JSON client-side
+        # (_coerce_json_object already handles fenced/prose-wrapped output), rather
+        # than losing the critic entirely.
+        if json_mode:
+            plain = {k: v for k, v in body.items()
+                     if k not in ("response_format", "reasoning_effort", "reasoning_format")}
+            resp = requests.post(GROQ_CHAT_URL, headers=headers, json=plain, timeout=timeout)
+            if resp.status_code == 200:
+                return _strip_think(resp.json()["choices"][0]["message"]["content"])
+            print(f"[AI Analyst] Groq retry error {resp.status_code}: {resp.text[:160]}")
     except Exception as e:
         print(f"[AI Analyst] Groq unavailable ({e})")
     return None
@@ -1742,7 +1765,14 @@ class LearningMemory:
         answer = feedback.get("answer", "")
         feedback_type = feedback.get("feedback_type", "wrong")
         note = feedback.get("note", "")
-        topic = (critic or {}).get("topic") or _infer_feedback_topic(question, answer)
+        # The stored `topic` is a LOOKUP KEY: route_overridden() and retrieve() both
+        # find corrections at ask-time from the QUESTION alone (no answer, no critic
+        # available then). Keying the row on question+answer or the critic's label
+        # stored it under a topic those lookups can never reproduce — so the
+        # correction was saved and then never applied (e.g. "how much is excess air
+        # costing me?" infers 'chat' from the question but 'efficiency' from the
+        # answer). Infer the key from the question only so store and lookup agree.
+        topic = _infer_feedback_topic(question)
         if feedback_type == "custom":
             rule = (critic or {}).get("correction_rule") or _custom_feedback_rule(note)
         else:
@@ -3130,6 +3160,19 @@ class AIAnalyst:
         self.latest_forecast = None
         self.latest_forecast_time = 0.0
         self.worker_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ai-analyst")
+        # Operator chat questions get their own pool so a fast deterministic answer
+        # (e.g. "what alarms fired in the last hour") never waits in the queue behind
+        # multi-second autonomous anomaly/alert diagnosis LLM calls, which peak during
+        # exactly the faults an operator is asking about. max_workers=2 lets a fast
+        # question still run while one slow "why"-style chat question is mid-LLM-call.
+        self.chat_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-chat")
+        # Operator feedback (flag / custom note) gets its own pool for the same
+        # reason: the operator is waiting for the green "Feedback noted" toast, and
+        # each feedback makes its own 1-2 Groq critic calls. On the shared pool it
+        # queued behind autonomous diagnosis and appeared to "do nothing" until a
+        # worker freed up. Separate from chat_pool so a slow feedback critic call
+        # never delays a live question either.
+        self.feedback_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ai-feedback")
         self.diagnosis_lock = Lock()
 
         # ── Autonomous closed-loop controller state ─────────────────────
@@ -3180,9 +3223,13 @@ class AIAnalyst:
         except Exception as e:
             print(f"[AI Analyst] ⚠ LLM warmup skipped: {e}")
 
-    def _submit_task(self, label, fn, *args):
-        """Run slow AI/historian work outside the MQTT network callback."""
-        future = self.worker_pool.submit(fn, *args)
+    def _submit_task(self, label, fn, *args, pool=None):
+        """Run slow AI/historian work outside the MQTT network callback.
+
+        pool defaults to the shared worker_pool; operator chat is routed to a
+        dedicated chat_pool so it never queues behind autonomous diagnosis.
+        """
+        future = (pool or self.worker_pool).submit(fn, *args)
 
         def _log_failure(done):
             try:
@@ -3214,10 +3261,10 @@ class AIAnalyst:
                 self._submit_task("alert", self.handle_alert, payload)
 
             elif topic == TOPIC_CHAT_IN:
-                self._submit_task("chat", self.handle_chat, payload)
+                self._submit_task("chat", self.handle_chat, payload, pool=self.chat_pool)
 
             elif topic == TOPIC_FEEDBACK:
-                self._submit_task("feedback", self.handle_feedback, payload)
+                self._submit_task("feedback", self.handle_feedback, payload, pool=self.feedback_pool)
 
             elif topic == TOPIC_OEE_REQUEST:
                 self._submit_task("oee_history", self.handle_oee_history_request, payload)
@@ -3953,6 +4000,19 @@ class AIAnalyst:
                 return route
         return "LLM"
 
+    def _route_corrected(self, question, route):
+        """True when the operator has already corrected this deterministic route
+        for this topic. Deterministic handlers return before the LLM and never
+        read correction rules, so a corrected route must step aside and let the
+        question fall through to the LLM path — the only path that injects the
+        stored rule (via learning.prompt_block). Without this, flagging a
+        deterministic answer as wrong stores a rule that is never consulted and
+        the same canned answer keeps coming back."""
+        if self.learning.route_overridden(question, route):
+            print(f"[AI Analyst] {route} route overridden by operator correction: {question[:70]}")
+            return True
+        return False
+
     def _publish_chat_answer(self, question, answer, note="", route="LLM"):
         """Publish a plain-text chat answer, record it in history, and set status."""
         # Chat answers are free text, so nothing else checks their wording. Log only:
@@ -4133,7 +4193,7 @@ class AIAnalyst:
         except Exception as e:
             print(f"[AI Analyst] Forecast answer error: {e}")
             forecast_answer = None
-        if forecast_answer:
+        if forecast_answer and not self._route_corrected(question, "FORECAST"):
             self._publish_chat_answer(question, forecast_answer, "Predictive forecast answer", route="FORECAST")
             return
 
@@ -4143,7 +4203,7 @@ class AIAnalyst:
         except Exception as e:
             print(f"[AI Analyst] Alarm history answer error: {e}")
             alarm_answer = None
-        if alarm_answer:
+        if alarm_answer and not self._route_corrected(question, "ALARM_HISTORY"):
             self._publish_chat_answer(question, alarm_answer, "Alarm history answer", route="ALARM_HISTORY")
             return
 
@@ -4153,7 +4213,7 @@ class AIAnalyst:
         except Exception as e:
             print(f"[AI Analyst] Efficiency-loss answer error: {e}")
             eff_loss_answer = None
-        if eff_loss_answer:
+        if eff_loss_answer and not self._route_corrected(question, "EFFICIENCY_LOSS"):
             self._publish_chat_answer(question, eff_loss_answer, "Efficiency-loss answer", route="EFFICIENCY_LOSS")
             return
 
@@ -4165,7 +4225,7 @@ class AIAnalyst:
         except Exception as e:
             print(f"[AI Analyst] Consumption answer error: {e}")
             consumption_answer = None
-        if consumption_answer:
+        if consumption_answer and not self._route_corrected(question, "CONSUMPTION"):
             self._publish_chat_answer(question, consumption_answer, "Consumption answer", route="CONSUMPTION")
             return
 
@@ -4208,7 +4268,7 @@ class AIAnalyst:
             return
 
         oee_answer = build_oee_answer(question, self.stats.snapshot())
-        if oee_answer:
+        if oee_answer and not self._route_corrected(question, "OEE"):
             print(f"[AI Analyst] OEE calculation answer: {question[:70]}")
             self.chat_history.append({"role": "user", "content": question})
             self.chat_history.append({"role": "assistant", "content": oee_answer})
@@ -4221,7 +4281,7 @@ class AIAnalyst:
             return
 
         control_relationship_answer = build_control_relationship_answer(question)
-        if control_relationship_answer:
+        if control_relationship_answer and not self._route_corrected(question, "CONTROL_RELATIONSHIP"):
             self._publish_chat_answer(question, control_relationship_answer, "Control relationship answer", route="CONTROL_RELATIONSHIP")
             return
 
@@ -4232,7 +4292,7 @@ class AIAnalyst:
         # date/time query. Same pattern as the current-value and OEE answers above.
         if answer_historical_metric_question is not None:
             historical_answer = answer_historical_metric_question(question)
-            if historical_answer:
+            if historical_answer and not self._route_corrected(question, "HISTORICAL_METRIC"):
                 print(f"[AI Analyst] Historical metric answer: {question[:70]}")
                 self.chat_history.append({"role": "user", "content": question})
                 self.chat_history.append({"role": "assistant", "content": historical_answer})

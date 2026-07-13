@@ -146,8 +146,8 @@ fuel keeps burning the same -> extra heat has nowhere to go -> pressure builds u
 at 13.5 bar the safety valve lifts by itself.
 Fix: check the downstream steam demand; lower the pressure setpoint to reduce firing;
 watch the safety-valve margin. Do NOT add fuel when pressure is high.
-Safety valve OPENED: pressure crossed the set point. Confirm the valve reseated and
-inspect it before running further. This is a top-priority job (do it now).
+Safety valve OPENED: pressure crossed the set point. Confirm the valve closed
+properly and inspect it before running further. This is a top-priority job (do it now).
 Team: I&C + Operations (Mechanical for the valve).
 """.strip(),
 
