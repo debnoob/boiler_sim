@@ -210,7 +210,7 @@ export function normalizeToString(val: unknown): string {
   }
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>;
-    const text = obj.action ?? obj.step ?? obj.description ?? obj.text ?? obj.message ?? obj.recommendation;
+    const text = obj.instruction ?? obj.action ?? obj.step ?? obj.task ?? obj.description ?? obj.text ?? obj.message ?? obj.recommendation;
     if (text != null) {
       const extras: string[] = [];
       if (obj.urgency) extras.push(`Urgency: ${normalizeToString(obj.urgency)}`);

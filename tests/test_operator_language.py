@@ -52,6 +52,8 @@ READING = {
         ("Fuel flow is NOT pinned. The reading is 151.35 m3/hr.", ["pinned"]),
         ("Review the pressure excursion.", ["excursion"]),
         ("Efficiency attribution shows deviated sensors", ["attribution", "deviated"]),
+        ("Confirm the valve reseated before running.", ["reseated"]),
+        ("Confirm valve reseat before continued operation.", ["reseat"]),
         ("PINNED at max", ["pinned"]),  # case-insensitive
         ("Fuel flow is at the maximum limit of 151.35 m3/hr.", []),
         ("", []),

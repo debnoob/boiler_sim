@@ -151,7 +151,7 @@ export function ShadowSetpointChart({ fuelFlow, interventionRelIdx, fuelFlowBefo
   return (
     <div className="inner-card">
       <div className="chart-card-header">
-        <div className="chart-card-title">Shadow Setpoint · Fuel Flow</div>
+        <div className="chart-card-title">Fuel Flow — Actual vs AI Setpoint</div>
         {hasIntervention && fuelFlowBefore != null && (
           <div className="status-pill ok">
             −12% vs nominal

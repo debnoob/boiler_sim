@@ -51,7 +51,10 @@ export function DegradationScatter({ data, isLight }: Props) {
   return (
     <div className="inner-card">
       <div className="chart-card-header">
-        <div className="chart-card-title">Degradation Scatter (Fuel vs Steam)</div>
+        <div>
+          <div className="chart-card-title">Firing vs Steam Output</div>
+          <div className="text-[9px]" style={{ color: 'var(--tx-muted)' }}>fuel m³/hr vs steam kg/hr · cluster drifts on degradation</div>
+        </div>
       </div>
       <div className="relative h-[120px] w-full">
         <canvas ref={canvasRef} />

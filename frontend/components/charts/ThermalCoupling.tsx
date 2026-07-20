@@ -161,7 +161,10 @@ export function ThermalCoupling({ labels, steamTemp, flueGasTemp, isLight, inter
   return (
     <div className="inner-card">
       <div className="chart-card-header">
-        <div className="chart-card-title">Thermal Coupling</div>
+        <div>
+          <div className="chart-card-title">Thermal Coupling</div>
+          <div className="text-[9px]" style={{ color: 'var(--tx-muted)' }}>steam vs flue-gas temp °C · gap widens on fouling</div>
+        </div>
         {hasIntervention && (
           <div className="status-pill ai">AI intervened</div>
         )}

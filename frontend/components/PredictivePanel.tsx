@@ -557,11 +557,22 @@ export function PredictivePanel() {
               >
                 {derived ? `${derived.pressureMargin.toFixed(2)}` : '--'}
               </div>
+              {/* Range meter: full margin (~3.5 bar, 10 -> 13.5 SV lift) down to 0 */}
+              <div style={{ width: '78%', height: 4, borderRadius: 2, background: 'var(--bd-inner)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', borderRadius: 2,
+                  width: `${Math.max(0, Math.min(100, (derived ? derived.pressureMargin / 3.5 * 100 : 0)))}%`,
+                  background: !derived ? 'var(--tx-muted)'
+                    : derived.pressureMargin < 0.5 ? '#ef4444'
+                    : derived.pressureMargin < 1.5 ? '#fbbf24'
+                    : '#4ade80',
+                }} />
+              </div>
               <div className="text-[10px]" style={{ color: 'var(--tx-muted)' }}>bar to SV lift</div>
             </div>
             <div className="inner-card flex flex-col justify-center items-center gap-1">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-center" style={{ color: 'var(--tx-label)' }}>
-                Steam / Fuel
+                Steam-to-Fuel Ratio
               </div>
               <div
                 className="text-2xl font-bold digit"
@@ -572,6 +583,16 @@ export function PredictivePanel() {
                 }}
               >
                 {derived ? derived.steamToFuel.toFixed(1) : '--'}
+              </div>
+              {/* Range meter across a typical 10–18 kg steam / m³ fuel band */}
+              <div style={{ width: '78%', height: 4, borderRadius: 2, background: 'var(--bd-inner)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', borderRadius: 2,
+                  width: `${Math.max(0, Math.min(100, (derived ? (derived.steamToFuel - 10) / 8 * 100 : 0)))}%`,
+                  background: !derived ? 'var(--tx-muted)'
+                    : derived.steamToFuel < 14 ? '#fbbf24'
+                    : '#4ade80',
+                }} />
               </div>
               <div className="text-[10px]" style={{ color: 'var(--tx-muted)' }}>kg steam / m³ fuel</div>
             </div>

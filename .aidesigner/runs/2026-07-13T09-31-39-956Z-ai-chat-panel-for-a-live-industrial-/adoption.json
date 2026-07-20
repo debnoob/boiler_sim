@@ -1,0 +1,34 @@
+{
+  "id": "2026-07-13T09-31-39-956Z-ai-chat-panel-for-a-live-industrial-",
+  "createdAt": "2026-07-13T09:38:39.523Z",
+  "repoRoot": "/Users/jethwakeval/Downloads/nexus-os-demo",
+  "prompt": "AI chat panel for a live industrial boiler control-room dashboard — dark HMI/SCADA aesthetic, cyan accent, quick-prompt chips, message stream with incident/diagnosis cards, input bar",
+  "targetRouteHint": null,
+  "targetFileHint": null,
+  "detectedFrameworks": [],
+  "componentLibraries": [],
+  "stylingSystems": [],
+  "routeCandidates": [],
+  "tokenSources": [],
+  "componentDirectories": [],
+  "htmlStructure": {
+    "title": "Boiler Telemetry &amp; Nexus Operator Control",
+    "primaryHeading": "",
+    "sectionCount": 0,
+    "buttonCount": 11,
+    "formCount": 1,
+    "cardLikeCount": 8,
+    "hasNavigation": true,
+    "hasFooter": false,
+    "hasPricingSignals": false,
+    "hasDashboardSignals": false
+  },
+  "recommendations": [
+    "Use the generated preview as the visual truth source while porting the layout."
+  ],
+  "warnings": [
+    "No frontend framework was detected. Validate the target surface manually before porting.",
+    "No obvious route targets were detected. Choose a target file deliberately before editing.",
+    "The artifact includes form markup. Reconnect validation, labels, and submit behavior using repo-native patterns."
+  ]
+}

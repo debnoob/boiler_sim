@@ -464,7 +464,7 @@ function ChatBubble({
 
   if (msg.type === 'thinking') {
     return (
-      <div className="flex items-start gap-2 slide-in">
+      <div className="flex items-start gap-2 slide-in min-w-0">
         <AiAvatar />
         <div className="ai-bubble ai-thinking-card ai-thinking-compact">
           <span className="ai-thinking-dot" />
@@ -484,7 +484,7 @@ function ChatBubble({
 
   if (msg.type === 'diagnosis') {
     return (
-      <div className="flex items-start gap-2 slide-in">
+      <div className="flex items-start gap-2 slide-in min-w-0">
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <DiagnosisCard data={msg.data as DiagnosisPayload} woCount={woCount} ts={msg.timestamp} />
@@ -496,7 +496,7 @@ function ChatBubble({
 
   if (msg.type === 'shift_report') {
     return (
-      <div className="flex items-start gap-2 slide-in">
+      <div className="flex items-start gap-2 slide-in min-w-0">
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <ShiftReportCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
@@ -508,7 +508,7 @@ function ChatBubble({
 
   if (msg.type === 'what_if') {
     return (
-      <div className="flex items-start gap-2 slide-in">
+      <div className="flex items-start gap-2 slide-in min-w-0">
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <WhatIfCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
@@ -520,7 +520,7 @@ function ChatBubble({
 
   if (msg.type === 'maintenance_priorities') {
     return (
-      <div className="flex items-start gap-2 slide-in">
+      <div className="flex items-start gap-2 slide-in min-w-0">
         <AiAvatar />
         <div style={{ flex: 1, minWidth: 0 }}>
           <MaintenancePrioritiesCard data={msg.data as AiResponsePayload} ts={msg.timestamp} />
@@ -549,7 +549,7 @@ function ChatBubble({
   const allLines = displayContent.split('\n').filter(l => l.trim());
 
   return (
-    <div className="flex items-start gap-2 slide-in">
+    <div className="flex items-start gap-2 slide-in min-w-0">
       <AiAvatar />
       <div className="ai-bubble ai-rich-msg">
         {allLines.map((line, i) => {

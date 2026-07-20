@@ -94,7 +94,7 @@ export function LiveTags() {
       <div className="mb-4 p-3 rounded-lg" style={{ background: 'var(--ai-think-bg)', border: '1px solid var(--accent-border)' }}>
         <div className="flex justify-between text-xs mb-2">
           <span className="font-semibold uppercase tracking-wider" style={{ color: 'var(--tx-muted)' }}>
-            ML Anomaly Score
+            Anomaly Score
           </span>
           <span className={mlStatusCls}>{mlStatus}</span>
         </div>

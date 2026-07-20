@@ -639,6 +639,14 @@ body.light .ai-live-context-item {
 .ai-messages-area {
   padding: 14px;
   overflow-y: auto;
+  /* Without this, the unset overflow-x computes to auto per spec (a lone
+     overflow-y: auto forces the other axis out of visible), turning this
+     vertical message list into a horizontal scroll container too. If any
+     message content ever nudges past the width, the browser can leave
+     scrollLeft nonzero, shifting every row (avatar included) left and
+     clipping the avatar off the edge. This list never needs horizontal
+     scroll — chips have their own dedicated scroller. */
+  overflow-x: hidden;
   flex: 1;
   background: var(--ai-msg-bg);
   display: flex;

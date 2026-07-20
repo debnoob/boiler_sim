@@ -75,7 +75,10 @@ export function AnomalyChart({ labels, data, score, isLight }: Props) {
   return (
     <div className="inner-card">
       <div className="chart-card-header">
-        <div className="chart-card-title">ML Anomaly Score History</div>
+        <div>
+          <div className="chart-card-title">Anomaly Score</div>
+          <div className="text-[9px]" style={{ color: 'var(--tx-muted)' }}>isolation-forest detector · 60s</div>
+        </div>
         <span className={scoreClass}>{score.toFixed(1)}%</span>
       </div>
       <div className="relative h-[120px] w-full">

@@ -191,7 +191,7 @@ export function BeforeAfterReplayChart({ efficiency, flueGasTemp, interventionRe
     <div className="inner-card">
       <div className="flex justify-between items-center mb-2">
         <div className="text-[10px] font-semibold tracking-wider uppercase" style={{ color: 'var(--tx-label)' }}>
-          🎬 Counterfactual Replay
+          Intervention Impact — With vs Without AI
         </div>
         <button
           onClick={toggle}
@@ -241,7 +241,7 @@ export function BeforeAfterReplayChart({ efficiency, flueGasTemp, interventionRe
 
       {replayActive && interventionTimestamp && (
         <div className="text-[9px] mt-1" style={{ color: 'var(--tx-muted)' }}>
-          Counterfactual diverges at AI intervention · {interventionTimestamp}
+          Dashed line = projected path without AI, from the intervention · {interventionTimestamp}
         </div>
       )}
     </div>
