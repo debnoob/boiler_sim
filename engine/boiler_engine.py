@@ -42,6 +42,8 @@ TOPICS = {
     "drum_level":         f"{BASE}/unit01/water/drum_level",
     "feedwater_flow":     f"{BASE}/unit01/water/feedwater_flow",
     "feedwater_temp":     f"{BASE}/unit01/water/feedwater_temp",
+    "feedwater_ph":       f"{BASE}/unit01/water/feedwater_ph",
+    "dissolved_oxygen":   f"{BASE}/unit01/water/dissolved_oxygen",
 
     # Combustion Side
     "fuel_flow":          f"{BASE}/unit01/combustion/fuel_flow",
@@ -49,10 +51,22 @@ TOPICS = {
     "o2_percent":         f"{BASE}/unit01/combustion/o2_percent",
     "flue_gas_temp":      f"{BASE}/unit01/combustion/flue_gas_temp",
 
+    # Natural-draft flue path
+    "furnace_pressure_pa":      f"{BASE}/unit01/flue/furnace_pressure_pa",
+    "stack_draft_pa":           f"{BASE}/unit01/flue/stack_draft_pa",
+    "flue_gas_flow_kg_hr":      f"{BASE}/unit01/flue/flue_gas_flow_kg_hr",
+    "stack_damper_command_pct": f"{BASE}/unit01/flue/stack_damper_command_pct",
+    "stack_damper_actual_pct":  f"{BASE}/unit01/flue/stack_damper_actual_pct",
+    "stack_exit_temp_c":        f"{BASE}/unit01/chimney/stack_exit_temp_c",
+    "chimney_skin_temp_c":      f"{BASE}/unit01/chimney/skin_temp_c",
+
     # Safety
     "flame_status":       f"{BASE}/unit01/safety/flame_status",
     "safety_valve":       f"{BASE}/unit01/safety/safety_valve",
     "tube_health":        f"{BASE}/unit01/safety/tube_health",
+    "tube_wall_thickness": f"{BASE}/unit01/safety/tube_wall_thickness",
+    "corrosion_rate":     f"{BASE}/unit01/safety/corrosion_rate",
+    "tube_leak_flow":     f"{BASE}/unit01/safety/tube_leak_flow",
 
     # Derived / KPIs
     "efficiency":         f"{BASE}/unit01/kpi/efficiency",
@@ -124,6 +138,10 @@ class FaultInjector:
             "air_damper_position":  1.0,   # combustion air damper
             "ignition_active":      True,  # flame on/off
             "level_sensor_bias":    0.0,   # mm offset added to drum level reading
+            "feedwater_ph":         8.8,   # mildly alkaline boiler feedwater
+            "dissolved_oxygen":     10.0,  # ppb after deaeration
+            "flue_path_resistance_factor": 1.0,
+            "stack_damper_stuck_position": None,
         }
 
     def reset(self):
@@ -135,6 +153,10 @@ class FaultInjector:
             "air_damper_position":  1.0,
             "ignition_active":      True,
             "level_sensor_bias":    0.0,
+            "feedwater_ph":         8.8,
+            "dissolved_oxygen":     10.0,
+            "flue_path_resistance_factor": 1.0,
+            "stack_damper_stuck_position": None,
         }
 
     def apply(self, fault_name, severity):
@@ -147,6 +169,10 @@ class FaultInjector:
         self.params["air_damper_position"] = 1.0
         self.params["ignition_active"]     = True
         self.params["level_sensor_bias"]   = 0.0
+        self.params["feedwater_ph"]        = 8.8
+        self.params["dissolved_oxygen"]    = 10.0
+        self.params["flue_path_resistance_factor"] = 1.0
+        self.params["stack_damper_stuck_position"] = None
 
         if fault_name == "tube_fouling":
             self.params["UA_factor"] = 1.0 - (severity * 0.6)
@@ -163,6 +189,92 @@ class FaultInjector:
         elif fault_name == "drum_level_sensor_drift":
             self.params["level_sensor_bias"] = severity * 150.0  # mm
 
+        elif fault_name == "tube_corrosion":
+            # A failed chemical-treatment/deaeration regime drives permanent wall loss.
+            self.params["feedwater_ph"] = 8.8 - severity * 3.0
+            self.params["dissolved_oxygen"] = 10.0 + severity * 190.0
+
+        elif fault_name == "flue_path_blockage":
+            self.params["flue_path_resistance_factor"] = 1.0 + severity * 4.0
+
+        elif fault_name == "stack_damper_stuck":
+            self.params["stack_damper_stuck_position"] = max(5.0, 65.0 * (1.0 - severity))
+
+
+# ============================================================
+# NATURAL-DRAFT FLUE PATH
+# ============================================================
+class FlueGasPathModel:
+    """Low-order chimney, duct, and stack-damper model for a packaged boiler."""
+
+    STACK_HEIGHT_M = 25.0
+    DUCT_AREA_M2 = 0.35
+    FIXED_LOSS_PA = 18.0
+    BASE_LOSS_K = 35.0
+    DAMPER_CLOSED_K = 120.0
+    AIR_DENSITY_KG_M3 = 1.184
+    FUEL_DENSITY_KG_M3 = 0.72
+    FLUE_GAS_R = 287.0
+    ATMOSPHERIC_PRESSURE_PA = 101325.0
+
+    def __init__(self):
+        self.chimney_skin_temp_c = 46.0
+
+    def reset(self):
+        self.chimney_skin_temp_c = 46.0
+
+    @staticmethod
+    def _clamp(value, low, high):
+        return max(low, min(high, value))
+
+    def update(self, fuel_flow_m3_hr, air_flow_m3_hr, stack_temp_c, ambient_temp_c,
+               damper_command_pct, resistance_factor=1.0, stuck_position=None):
+        """Return one stable flue-path step using a pressure-loss balance in Pa."""
+        actual_damper = (
+            self._clamp(stuck_position, 0.0, 100.0)
+            if stuck_position is not None
+            else self._clamp(damper_command_pct, 0.0, 100.0)
+        )
+        ambient_k = max(ambient_temp_c + 273.15, 200.0)
+        stack_k = max(stack_temp_c + 273.15, ambient_k + 1.0)
+        rho_ambient = self.ATMOSPHERIC_PRESSURE_PA / (self.FLUE_GAS_R * ambient_k)
+        rho_flue = self.ATMOSPHERIC_PRESSURE_PA / (self.FLUE_GAS_R * stack_k)
+        available_draft_pa = max(0.0, 9.80665 * self.STACK_HEIGHT_M * (rho_ambient - rho_flue))
+
+        generated_flow = max(
+            50.0,
+            fuel_flow_m3_hr * self.FUEL_DENSITY_KG_M3 + air_flow_m3_hr * self.AIR_DENSITY_KG_M3,
+        )
+
+        def pressure_balance(flow_kg_hr):
+            velocity = (flow_kg_hr / 3600.0) / max(rho_flue * self.DUCT_AREA_M2, 0.05)
+            dynamic_pressure = rho_flue * velocity * velocity / 2.0
+            damper_k = self.DAMPER_CLOSED_K * ((100.0 - actual_damper) / 100.0) ** 2
+            loss_pa = self.FIXED_LOSS_PA + dynamic_pressure * (
+                self.BASE_LOSS_K * resistance_factor + damper_k
+            )
+            return loss_pa - available_draft_pa, loss_pa
+
+        # Calculate upstream furnace pressure from the full combustion flow.
+        # A restriction then reduces discharged flow independently; this avoids
+        # an artificial feedback in which severe blockage looked like excess
+        # negative draft after a single-step flow correction.
+        furnace_pressure_pa, pressure_loss_pa = pressure_balance(generated_flow)
+        actual_flow = generated_flow / math.sqrt(max(resistance_factor, 1.0))
+        if actual_damper < 20.0:
+            actual_flow *= max(0.25, actual_damper / 20.0)
+
+        skin_target = ambient_temp_c + 0.13 * max(0.0, stack_temp_c - ambient_temp_c)
+        self.chimney_skin_temp_c += 0.08 * (skin_target - self.chimney_skin_temp_c)
+        return {
+            "furnace_pressure_pa": furnace_pressure_pa,
+            "stack_draft_pa": -available_draft_pa,
+            "flue_gas_flow_kg_hr": actual_flow,
+            "stack_damper_actual_pct": actual_damper,
+            "pressure_loss_pa": pressure_loss_pa,
+            "chimney_skin_temp_c": self.chimney_skin_temp_c,
+        }
+
 # ============================================================
 # BOILER STATE MACHINE
 # ============================================================
@@ -171,7 +283,7 @@ class BoilerState:
         self.reset()
 
     def reset(self):
-        # Operating mode: 0=Normal, 1=Degrading, 2=Critical, 3=Fault, 4=Ideal
+        # Operating mode: 0=Normal, 1=Degrading, 2=Critical, 3=Fault, 4=Ideal, 5=Corrosion
         self.mode = 0
         self.tick = 0
         self.fault_injected = False
@@ -214,7 +326,21 @@ class BoilerState:
         self.flue_gas_temp     = 198.0
         self.flame_status      = 1
         self.safety_valve      = 0
+        self.furnace_draft_setpoint_pa = -20.0
+        self.furnace_pressure_pa = -20.0
+        self.stack_draft_pa = -28.0
+        self.flue_gas_flow_kg_hr = 1600.0
+        self.stack_damper_command_pct = 62.0
+        self.stack_damper_actual_pct = 62.0
+        self.stack_exit_temp_c = 198.0
+        self.chimney_skin_temp_c = 46.0
         self.tube_health       = 97.0
+        self.nominal_wall_thickness = 6.0  # mm
+        self.tube_wall_thickness = self.nominal_wall_thickness
+        self.corrosion_rate    = 0.02       # mm/year
+        self.feedwater_ph      = 8.8
+        self.dissolved_oxygen  = 10.0       # ppb
+        self.tube_leak_flow    = 0.0        # kg/hr
         self.efficiency        = 87.0
         self.heat_rate         = 10500.0
 
@@ -227,6 +353,7 @@ class BoilerState:
         self.pressure_buffer  = [10.0]  * 5
         self.temp_buffer      = [180.0] * 8
         self.fluegas_buffer   = [198.0] * 12
+        self.furnace_pressure_buffer = [-20.0] * 4
 
 # ============================================================
 # PHYSICS ENGINE
@@ -251,6 +378,7 @@ class BoilerPhysicsEngine:
         self.state = BoilerState()
         self.faults = FaultInjector()
         self.environment = EnvironmentModel()   # ambient + fuel-quality driver
+        self.flue_path = FlueGasPathModel()
         self.reset_ode_inventory()
 
         # Three PID loops
@@ -263,6 +391,9 @@ class BoilerPhysicsEngine:
                                            output_min=-2500, output_max=2500)
         self.o2_pid        = PIDController(Kp=1.0,  Ki=0.2,  Kd=0.1,
                                            output_min=0, output_max=self.MAX_AIR_FLOW)
+        # Natural-draft damper: more opening makes furnace pressure more negative.
+        self.draft_pid     = PIDController(Kp=0.35, Ki=0.02, Kd=0.08,
+                                           output_min=-6, output_max=6)
 
     def gaussian_noise(self, value, sigma_pct=0.008):
         if self.state.mode == 4:
@@ -315,10 +446,11 @@ class BoilerPhysicsEngine:
         """
         Åström-Bell drum boiler ODEs.
         state_vec = [P_drum (bar), m_water (kg), m_steam (kg)]
-        inputs    = [Q_fuel (kW), fw_flow (kg/s), steam_demand (kg/s), UA_factor]
+        inputs    = [Q_fuel (kW), fw_flow (kg/s), steam_demand (kg/s), UA_factor,
+                     tube_leak (kg/s)]
         """
         P, m_w, m_s = state_vec
-        Q_fuel, fw_flow, steam_demand, UA_factor = inputs
+        Q_fuel, fw_flow, steam_demand, UA_factor, tube_leak = inputs
 
         P_mpa = max(P / 10.0, 0.001)
         try:
@@ -344,11 +476,11 @@ class BoilerPhysicsEngine:
         evap_rate = Q_effective / max(h_fg, 1.0)
 
         # Mass balances
-        dm_w_dt = fw_flow - evap_rate
+        dm_w_dt = fw_flow - evap_rate - tube_leak
         dm_s_dt = evap_rate - steam_demand
 
         # Simplified energy-based pressure dynamics
-        net_energy = Q_effective - steam_demand * h_g + fw_flow * h_fw
+        net_energy = Q_effective - (steam_demand + tube_leak) * h_g + fw_flow * h_fw
         dP_dt = net_energy / max(m_w * 50.0, 1.0)
         # Clamp pressure rate to avoid instability
         dP_dt = max(-2.0, min(2.0, dP_dt))
@@ -365,7 +497,7 @@ class BoilerPhysicsEngine:
         return level_fraction * 800.0  # 0–800 mm range
 
     def calculate_efficiency(self, flue_gas_temp, o2_percent, UA_factor,
-                             ambient_temp=25.0, fuel_lhv=35.5):
+                             ambient_temp=25.0, fuel_lhv=35.5, leak_flow=0.0):
         stack_loss      = (flue_gas_temp - 150) * 0.04
         excess_air_loss = max(0, (o2_percent - 3.0)) * 0.8
         fouling_loss    = (1.0 - UA_factor) * 15.0
@@ -373,8 +505,9 @@ class BoilerPhysicsEngine:
         # efficiency is unchanged; colder ambient and leaner gas cost efficiency).
         ambient_loss    = (25.0 - ambient_temp) * 0.08        # shell + cold-air loss
         fuel_quality_loss = (35.5 - fuel_lhv) * 0.4           # leaner gas burns worse
+        leak_loss       = min(8.0, max(0.0, leak_flow) / 180.0)
         efficiency = (90.0 - stack_loss - excess_air_loss - fouling_loss
-                      - ambient_loss - fuel_quality_loss)
+                      - ambient_loss - fuel_quality_loss - leak_loss)
         return max(min(efficiency, 94.0), 45.0)
 
     def tick(self, scenario="normal", degradation=0.0):
@@ -390,6 +523,28 @@ class BoilerPhysicsEngine:
         s.ambient_temp = ambient_temp
         s.humidity     = humidity
         s.fuel_lhv     = fuel_lhv
+
+        # ---- Water chemistry and pressure-boundary integrity ----
+        s.feedwater_ph = fp["feedwater_ph"]
+        s.dissolved_oxygen = fp["dissolved_oxygen"]
+        if self.faults.active_fault == "tube_corrosion":
+            chemistry_severity = self.faults.severity
+            ph_attack = max(0.0, 8.5 - s.feedwater_ph) / 2.7
+            oxygen_attack = max(0.0, s.dissolved_oxygen - 20.0) / 180.0
+            s.corrosion_rate = 0.02 + 0.98 * min(1.0, 0.45 * ph_attack + 0.55 * oxygen_attack)
+            # Demo acceleration: 30 seconds represents one equivalent operating year.
+            s.tube_wall_thickness = max(
+                3.0, s.tube_wall_thickness - s.corrosion_rate * dt / 30.0
+            )
+        else:
+            s.corrosion_rate = 0.02
+
+        leak_threshold_mm = 5.5
+        if s.tube_wall_thickness < leak_threshold_mm:
+            penetration = leak_threshold_mm - s.tube_wall_thickness
+            s.tube_leak_flow = min(1600.0, 180.0 + 700.0 * self.faults.severity + 2200.0 * penetration)
+        else:
+            s.tube_leak_flow = 0.0
 
         # ---- Determine fault/degradation physical parameters ----
         UA_factor = fp["UA_factor"]
@@ -408,6 +563,16 @@ class BoilerPhysicsEngine:
         pressure_sp = s.pressure_setpoint_override if s.pressure_setpoint_override is not None else s.steam_pressure_setpoint
         o2_sp       = s.o2_setpoint_override       if s.o2_setpoint_override       is not None else s.o2_setpoint
 
+        # Natural-draft PID: a less-negative furnace pressure opens the damper;
+        # an overly negative pressure closes it. The controller adjusts the
+        # persisted damper position rather than commanding a separate fan.
+        damper_adjustment = self.draft_pid.update(
+            s.furnace_pressure_pa, s.furnace_draft_setpoint_pa, dt
+        )
+        s.stack_damper_command_pct = max(
+            5.0, min(100.0, s.stack_damper_command_pct + damper_adjustment)
+        )
+
         # ---- PID controllers ----
         # Pressure → fuel flow (lower setpoint = lower firing rate = less thermal stress)
         fuel_flow_cmd = self.pressure_pid.update(
@@ -425,7 +590,12 @@ class BoilerPhysicsEngine:
         level_trim_kghr = self.drumlevel_pid.update(
             s.drum_level_setpoint, s.drum_level, dt
         )
-        fw_flow_cmd_kghr = steam_demand_kghr + level_trim_kghr
+        # Once a leak is measurable, its replacement feedforward is protected
+        # from an opposing level trim. This exposes the classic leak signature:
+        # stable/falling level despite elevated feedwater demand.
+        if s.tube_leak_flow > 0:
+            level_trim_kghr = max(level_trim_kghr, -0.25 * s.tube_leak_flow)
+        fw_flow_cmd_kghr = steam_demand_kghr + s.tube_leak_flow + level_trim_kghr
         fw_flow_cmd_kghr = max(0.0, min(self.MAX_FW_FLOW, fw_flow_cmd_kghr))
         fw_flow_cmd_kghr *= fp["fw_valve_position"]
         fw_flow_cmd_kgs = fw_flow_cmd_kghr / 3600.0
@@ -435,13 +605,18 @@ class BoilerPhysicsEngine:
             o2_sp, s.o2_percent, dt
         )
         air_flow_cmd *= fp["air_damper_position"]
+        # Positive furnace pressure opposes combustion-air delivery. This is
+        # the one-tick feedback link between the chimney and boiler combustion.
+        draft_air_factor = max(0.55, min(1.0, 1.0 - max(0.0, s.furnace_pressure_pa) / 120.0))
+        air_flow_cmd *= draft_air_factor
 
         # ---- Heat input (kW) from fuel (uses live fuel quality) ----
         fuel_m3_s = fuel_flow_cmd / 3600.0
         Q_fuel_kw = fuel_m3_s * s.fuel_lhv * 1000.0  # kW
 
         # ---- Integrate ODE over one timestep ----
-        inputs = (Q_fuel_kw, fw_flow_cmd_kgs, steam_demand_kgs, UA_factor)
+        inputs = (Q_fuel_kw, fw_flow_cmd_kgs, steam_demand_kgs, UA_factor,
+                  s.tube_leak_flow / 3600.0)
         sol = solve_ivp(
             self.boiler_odes,
             [0, dt],
@@ -506,20 +681,44 @@ class BoilerPhysicsEngine:
             0.90
         )
 
+        # The drum/pressure model has a slow startup transient. Use steam demand
+        # as a bounded combustion-load proxy so the natural-draft baseline stays
+        # physically meaningful while that loop settles.
+        flue_fuel_reference = max(fuel_flow_cmd, steam_demand_kghr / 16.7)
+        flue_air_reference = max(air_flow_cmd, flue_fuel_reference * 11.0)
+        flue_state = self.flue_path.update(
+            flue_fuel_reference,
+            flue_air_reference,
+            s.flue_gas_temp,
+            s.ambient_temp,
+            s.stack_damper_command_pct,
+            resistance_factor=fp["flue_path_resistance_factor"],
+            stuck_position=fp["stack_damper_stuck_position"],
+        )
+        s.furnace_pressure_pa = self.lag_filter(
+            s.furnace_pressure_buffer, flue_state["furnace_pressure_pa"], 0.60
+        )
+        s.stack_draft_pa = flue_state["stack_draft_pa"]
+        s.flue_gas_flow_kg_hr = flue_state["flue_gas_flow_kg_hr"]
+        s.stack_damper_actual_pct = flue_state["stack_damper_actual_pct"]
+        s.stack_exit_temp_c = s.flue_gas_temp
+        s.chimney_skin_temp_c = flue_state["chimney_skin_temp_c"]
+
         # Safety
         s.flame_status = 1 if fp["ignition_active"] and fuel_flow_cmd > 0.1 else 0
         s.safety_valve = 1 if s.steam_pressure > 13.5 else 0
 
-        # Tube health degrades with UA_factor
+        # Tube health is pressure-boundary integrity, independent of recoverable fouling.
         s.tube_health = max(
             45.0,
-            min(97.0, UA_factor * 97.0 + (0.0 if scenario == "ideal" else np.random.normal(0, 0.1)))
+            min(97.0, 97.0 * s.tube_wall_thickness / s.nominal_wall_thickness)
         )
 
         # KPIs
         s.efficiency = self.calculate_efficiency(
             s.flue_gas_temp, s.o2_percent, UA_factor,
             ambient_temp=s.ambient_temp, fuel_lhv=s.fuel_lhv,
+            leak_flow=s.tube_leak_flow,
         )
         s.heat_rate  = (s.fuel_flow * s.fuel_lhv * 1000.0) / max(s.steam_flow, 1.0)
 
@@ -528,7 +727,7 @@ class BoilerPhysicsEngine:
     def get_readings(self):
         s = self.state
         fp = self.faults.params
-        mode_names = {0: "NORMAL", 1: "DEGRADING", 2: "CRITICAL", 3: "FAULT", 4: "IDEAL"}
+        mode_names = {0: "NORMAL", 1: "DEGRADING", 2: "CRITICAL", 3: "FAULT", 4: "IDEAL", 5: "CORROSION", 6: "FLUE_FAULT"}
 
         # Apply sensor bias fault to drum level reading only
         visible_drum_level = s.drum_level + fp["level_sensor_bias"]
@@ -544,13 +743,25 @@ class BoilerPhysicsEngine:
                 "drum_level":        round(self.gaussian_noise(visible_drum_level,  0.006), 1),
                 "feedwater_flow":    round(self.gaussian_noise(s.feedwater_flow,    0.007), 1),
                 "feedwater_temp":    round(self.gaussian_noise(s.feedwater_temp,    0.005), 2),
+                "feedwater_ph":      round(self.gaussian_noise(s.feedwater_ph,      0.002), 2),
+                "dissolved_oxygen":  round(self.gaussian_noise(s.dissolved_oxygen,  0.01), 1),
                 "fuel_flow":         round(self.gaussian_noise(s.fuel_flow,         0.006), 2),
                 "air_flow":          round(self.gaussian_noise(s.air_flow,          0.007), 1),
                 "o2_percent":        round(self.gaussian_noise(s.o2_percent,        0.015), 3),
                 "flue_gas_temp":     round(self.gaussian_noise(s.flue_gas_temp,     0.005), 2),
+                "furnace_pressure_pa": round(self.gaussian_noise(s.furnace_pressure_pa, 0.03), 2),
+                "stack_draft_pa":    round(self.gaussian_noise(s.stack_draft_pa,    0.03), 2),
+                "flue_gas_flow_kg_hr": round(self.gaussian_noise(s.flue_gas_flow_kg_hr, 0.01), 1),
+                "stack_damper_command_pct": round(s.stack_damper_command_pct, 1),
+                "stack_damper_actual_pct": round(s.stack_damper_actual_pct, 1),
+                "stack_exit_temp_c": round(self.gaussian_noise(s.stack_exit_temp_c, 0.005), 2),
+                "chimney_skin_temp_c": round(self.gaussian_noise(s.chimney_skin_temp_c, 0.01), 1),
                 "flame_status":      s.flame_status,
                 "safety_valve":      s.safety_valve,
                 "tube_health":       round(self.gaussian_noise(s.tube_health,       0.002), 2),
+                "tube_wall_thickness": round(self.gaussian_noise(s.tube_wall_thickness, 0.001), 3),
+                "corrosion_rate":    round(self.gaussian_noise(s.corrosion_rate,    0.01), 3),
+                "tube_leak_flow":    round(self.gaussian_noise(s.tube_leak_flow,    0.01), 1),
                 "efficiency":        round(self.gaussian_noise(s.efficiency,        0.003), 2),
                 "heat_rate":         round(self.gaussian_noise(s.heat_rate,         0.004), 1),
                 # Environmental readings (drive the efficiency/flue-gas drift)
@@ -570,6 +781,7 @@ class BoilerPhysicsEngine:
                 "degradation_rate_factor": round(s.degradation_rate_factor, 3),
                 "firing_reduction_pct": round(s.firing_reduction_pct, 1),
                 "soot_blows":    s.soot_blow_count,
+                "furnace_draft_setpoint_pa": round(s.furnace_draft_setpoint_pa, 1),
             },
         }
 
@@ -589,6 +801,7 @@ class NexusMQTTPublisher:
         self.scenario      = "normal"
         self.scenario_tick = 0
         self.max_degradation_ticks = 30
+        self.alarm_persistence = {}
 
     def reset_to_clean_operation(self, reset_state=False):
         """Return the boiler to a healthy no-fault operating baseline."""
@@ -600,6 +813,8 @@ class NexusMQTTPublisher:
         self.engine.pressure_pid.reset()
         self.engine.drumlevel_pid.reset()
         self.engine.o2_pid.reset()
+        self.engine.draft_pid.reset()
+        self.engine.flue_path.reset()
         s.ai_autopilot_active = False
         s.o2_setpoint_override = None
         s.pressure_setpoint_override = None
@@ -608,6 +823,14 @@ class NexusMQTTPublisher:
         s.soot_blow_pending = False
         s.current_degradation = 0.0
         s.degradation_factor = 0.0
+        s.tube_wall_thickness = s.nominal_wall_thickness
+        s.corrosion_rate = 0.02
+        s.feedwater_ph = 8.8
+        s.dissolved_oxygen = 10.0
+        s.tube_leak_flow = 0.0
+        s.furnace_pressure_pa = s.furnace_draft_setpoint_pa
+        s.stack_damper_command_pct = 62.0
+        s.stack_damper_actual_pct = 62.0
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -773,6 +996,24 @@ class NexusMQTTPublisher:
             self.engine.faults.apply("flame_failure", 1.0)
             self.engine.tick(scenario="fault", degradation=0.0)
 
+        elif self.scenario == "corrosion":
+            s.mode = 5
+            # Chemistry excursion develops first; wall loss and leakage follow.
+            severity = min(1.0, 0.12 + self.scenario_tick / 55.0)
+            self.engine.faults.apply("tube_corrosion", severity)
+            self.engine.tick(scenario="corrosion", degradation=0.0)
+
+        elif self.scenario == "flue_blockage":
+            s.mode = 6
+            severity = min(1.0, 0.15 + self.scenario_tick / 35.0)
+            self.engine.faults.apply("flue_path_blockage", severity)
+            self.engine.tick(scenario="flue_blockage", degradation=0.0)
+
+        elif self.scenario == "damper_fault":
+            s.mode = 6
+            self.engine.faults.apply("stack_damper_stuck", 0.92)
+            self.engine.tick(scenario="damper_fault", degradation=0.0)
+
         self.scenario_tick += 1
 
     def publish_alert(self, severity, message, tag, value, threshold):
@@ -787,6 +1028,12 @@ class NexusMQTTPublisher:
         }
         self.client.publish(TOPICS["alerts"], json.dumps(alert), qos=2, retain=False)
         print(f"[{self.timestamp()}] ALERT [{severity}] {message} | {tag}={value}")
+
+    def _persisting(self, key, condition, samples):
+        """Return true only after a condition holds for consecutive heartbeats."""
+        count = self.alarm_persistence.get(key, 0) + 1 if condition else 0
+        self.alarm_persistence[key] = count
+        return count >= samples
 
     def check_alarms(self, readings):
         tags = readings["tags"]
@@ -820,6 +1067,34 @@ class NexusMQTTPublisher:
             self.publish_alert("HIGH", "Tube health index critical — inspection required",
                                "tube_health", tags["tube_health"], 70)
 
+        if tags["feedwater_ph"] < 7.5:
+            self.publish_alert("HIGH", "Feedwater pH low — active corrosion environment",
+                               "feedwater_ph", tags["feedwater_ph"], 7.5)
+
+        if tags["dissolved_oxygen"] > 50:
+            self.publish_alert("HIGH", "Dissolved oxygen high — deaeration or scavenger failure",
+                               "dissolved_oxygen", tags["dissolved_oxygen"], 50)
+
+        if tags["tube_wall_thickness"] < 5.5:
+            self.publish_alert("CRITICAL", "Tube minimum wall breached — leak progression active",
+                               "tube_wall_thickness", tags["tube_wall_thickness"], 5.5)
+
+        # Draft alarms are alarm-only in the training model; no fuel trip is
+        # applied. Persistence prevents normal load changes from causing noise.
+        if self._persisting("furnace_pressure_high", tags["furnace_pressure_pa"] > -5.0, 5):
+            self.publish_alert("HIGH", "Furnace pressure high — flue path draft inadequate",
+                               "furnace_pressure_pa", tags["furnace_pressure_pa"], -5.0)
+        if self._persisting("furnace_pressure_low", tags["furnace_pressure_pa"] < -90.0, 5):
+            self.publish_alert("MEDIUM", "Furnace draft excessive — verify stack damper position",
+                               "furnace_pressure_pa", tags["furnace_pressure_pa"], -90.0)
+        if self._persisting(
+            "damper_command_mismatch",
+            tags["stack_damper_command_pct"] > 45.0 and tags["stack_damper_actual_pct"] < 20.0,
+            5,
+        ):
+            self.publish_alert("HIGH", "Stack damper response mismatch — flue path restricted",
+                               "stack_damper_actual_pct", tags["stack_damper_actual_pct"], 20.0)
+
         if tags["flame_status"] == 0:
             self.publish_alert("CRITICAL", "FLAME FAILURE — Emergency shutdown initiated",
                                "flame_status", 0, 1)
@@ -840,13 +1115,20 @@ class NexusMQTTPublisher:
               f"F={tags['steam_flow']:.0f} kg/hr")
         print(f"  Water:    Level={tags['drum_level']:.0f}mm  "
               f"FW={tags['feedwater_flow']:.0f} kg/hr  "
-              f"FWT={tags['feedwater_temp']:.1f}°C")
+              f"FWT={tags['feedwater_temp']:.1f}°C  "
+              f"pH={tags['feedwater_ph']:.2f}  DO={tags['dissolved_oxygen']:.0f}ppb")
         print(f"  Combust:  Fuel={tags['fuel_flow']:.1f} m³/hr  "
               f"O2={tags['o2_percent']:.2f}%  "
               f"FGT={tags['flue_gas_temp']:.1f}°C")
+        print(f"  Flue:     Furnace={tags['furnace_pressure_pa']:.1f}Pa  "
+              f"Draft={tags['stack_draft_pa']:.1f}Pa  "
+              f"Flow={tags['flue_gas_flow_kg_hr']:.0f}kg/hr  "
+              f"Damper={tags['stack_damper_actual_pct']:.0f}%")
         print(f"  Safety:   Flame={'ON' if tags['flame_status'] else 'OFF'}  "
               f"SV={'OPEN' if tags['safety_valve'] else 'CLOSED'}  "
-              f"TubeHealth={tags['tube_health']:.1f}%")
+              f"TubeHealth={tags['tube_health']:.1f}%  "
+              f"Wall={tags['tube_wall_thickness']:.3f}mm  "
+              f"Corr={tags['corrosion_rate']:.3f}mm/y  Leak={tags['tube_leak_flow']:.0f}kg/hr")
         print(f"  KPI:      Efficiency={tags['efficiency']:.1f}%  "
               f"HeatRate={tags['heat_rate']:.0f} kJ/kg")
         print(f"{'='*60}")
@@ -875,7 +1157,7 @@ class NexusMQTTPublisher:
 
         self.running = True
         print(f"[{self.timestamp()}] Starting data stream — scenario: {self.scenario}")
-        print(f"[{self.timestamp()}] Commands: [i]deal [n]ormal [d]egrade [c]ritical [f]ault [s]top [r]eset [q]uit\n")
+        print(f"[{self.timestamp()}] Commands: [i]deal [n]ormal [d]egrade [c]ritical [k]corrosion [h]flue-block [m]damper [f]ault [s]top [r]eset [q]uit\n")
 
         input_thread = threading.Thread(target=self.handle_input, daemon=True)
         input_thread.start()
@@ -891,7 +1173,7 @@ class NexusMQTTPublisher:
     def handle_input(self):
         import sys
         import select
-        print("[INPUT] Press i/n/d/c/f/s/r/q then Enter to control simulation\n")
+        print("[INPUT] Press i/n/d/c/k/h/m/f/s/r/q then Enter to control simulation\n")
         sys.stdout.flush()
         while self.running:
             try:
@@ -931,6 +1213,22 @@ class NexusMQTTPublisher:
                         self.scenario = "fault"
                         self.scenario_tick = 0
                         print(f"\n>>> FAULT INJECTED — flame failure + ESD\n")
+                        sys.stdout.flush()
+                    elif cmd == 'k':
+                        self.scenario = "corrosion"
+                        self.scenario_tick = 0
+                        self.reset_to_clean_operation(reset_state=False)
+                        print(f"\n>>> CORROSION INJECTED — chemistry excursion, wall loss, then tube leak\n")
+                        sys.stdout.flush()
+                    elif cmd == 'h':
+                        self.scenario = "flue_blockage"
+                        self.scenario_tick = 0
+                        print(f"\n>>> FLUE PATH BLOCKAGE INJECTED — draft will degrade without fuel trip\n")
+                        sys.stdout.flush()
+                    elif cmd == 'm':
+                        self.scenario = "damper_fault"
+                        self.scenario_tick = 0
+                        print(f"\n>>> STACK DAMPER FAULT INJECTED — command/actual mismatch active\n")
                         sys.stdout.flush()
                     elif cmd == 'r':
                         self.scenario = "normal"

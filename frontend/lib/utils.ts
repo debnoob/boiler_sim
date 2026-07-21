@@ -34,6 +34,9 @@ export function calcRisk(t: TelemetryTags, degradation: number): number {
   if (t.drum_level > 720) risk += 10;
   if (t.steam_pressure > 13) risk += 20;
   if (t.tube_health < 70) risk += 10;
+  if ((t.corrosion_rate ?? 0.02) > 0.2) risk += 15;
+  if ((t.tube_wall_thickness ?? 6) < 5.5) risk += 25;
+  if ((t.tube_leak_flow ?? 0) > 50) risk += 25;
   if (t.flame_status === 0) risk = 100;
   return Math.min(Math.round(risk), 99);
 }

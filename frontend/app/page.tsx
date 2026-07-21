@@ -114,7 +114,7 @@ export default function OverviewPage() {
   const {
     tags, degradationFactor, mode, mqttStatus, anomalyScore, anomalyIsAnomaly,
     aiStatus, forecastDeadline, healthHistory, moiraiForecast, kpiSeries, kpiBaseline,
-    riskSeries, anomalySeries, isLight,
+    riskSeries, anomalySeries, integritySeries, isLight,
   } = useNexusStore();
   const pal = vizPalette(isLight);
 
@@ -141,10 +141,16 @@ export default function OverviewPage() {
     icon: React.ComponentType<{ size?: number; strokeWidth?: number }>;
   }> = [
     { label: 'MQTT', value: mqttStatus.toUpperCase(), tone: mqttStatus === 'connected' ? 'good' : 'bad', icon: Radio },
-    { label: 'Mode', value: mode, tone: mode === 'NORMAL' ? 'good' : mode === 'FAULT' ? 'bad' : 'warn', icon: Gauge },
+    { label: 'Mode', value: mode, tone: mode === 'NORMAL' || mode === 'IDEAL' ? 'good' : mode === 'FAULT' || mode === 'FLUE_FAULT' ? 'bad' : 'warn', icon: Gauge },
     { label: 'AI', value: aiStatus === 'analyzing' ? 'ANALYZING' : 'ONLINE', tone: aiStatus === 'analyzing' ? 'warn' : 'good', icon: Bot },
     { label: 'Anomaly', value: `${anomalyScore}%`, tone: anomalyIsAnomaly ? 'bad' : anomalyScore > 55 ? 'warn' : 'good', icon: ShieldCheck },
     { label: 'Risk', value: `${risk}%`, tone: risk > 70 ? 'bad' : risk > 40 ? 'warn' : 'good', icon: TriangleAlert },
+    {
+      label: 'Flue Path',
+      value: tags?.furnace_pressure_pa != null ? `${tags.furnace_pressure_pa.toFixed(0)} Pa` : '--',
+      tone: tags?.furnace_pressure_pa == null ? 'warn' : tags.furnace_pressure_pa > -5 ? 'bad' : tags.furnace_pressure_pa > -10 || tags.furnace_pressure_pa < -90 ? 'warn' : 'good',
+      icon: Activity,
+    },
   ];
 
   const headlineTone = mode === 'FAULT' || anomalyIsAnomaly || risk > 70 ? 'bad' : risk > 40 || aiStatus === 'analyzing' || anomalyScore > 55 ? 'warn' : 'good';
@@ -241,6 +247,8 @@ export default function OverviewPage() {
               value={`${risk}`} data={riskSeries.datasets[0]} />
             <TrendTile label="Anomaly Score" unit="%" color={pal.factor.quality}
               value={`${anomalyScore}`} data={anomalySeries.datasets[0]} />
+            <TrendTile label="Tube Wall" unit="mm" color={pal.status.good}
+              value={tags?.tube_wall_thickness != null ? tags.tube_wall_thickness.toFixed(3) : '--'} data={integritySeries.datasets[0]} />
           </div>
         </section>
       </div>
@@ -260,9 +268,10 @@ export default function OverviewPage() {
           </div>
           <div className="ov-runway-content">
             <div className="ov-runway-metrics">
-              <div><span>Tube Health</span><strong>{tags ? `${tags.tube_health.toFixed(1)}%` : '--'}</strong></div>
-              <div><span>Threshold ETA</span><strong>{etaText}</strong></div>
-              <div><span>Health Slope</span><strong>{`${healthDelta.toFixed(2)} pts`}</strong></div>
+              <div><span>Tube Integrity</span><strong>{tags ? `${tags.tube_health.toFixed(1)}%` : '--'}</strong></div>
+              <div><span>Wall Thickness</span><strong>{tags?.tube_wall_thickness != null ? `${tags.tube_wall_thickness.toFixed(3)} mm` : '--'}</strong></div>
+              <div><span>Corrosion Rate</span><strong>{tags?.corrosion_rate != null ? `${tags.corrosion_rate.toFixed(3)} mm/y` : '--'}</strong></div>
+              <div><span>Leak Flow</span><strong>{tags?.tube_leak_flow != null ? `${tags.tube_leak_flow.toFixed(0)} kg/hr` : '--'}</strong></div>
             </div>
             <div className="ov-runway-track" aria-hidden="true">
               <span className="ov-runway-fill" style={{ width: `${Math.max(0, Math.min(100, latestHealth ?? 0))}%` }} />

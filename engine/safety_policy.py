@@ -23,6 +23,8 @@ BASELINES = {
     "air_flow": 1518.0,
     "o2_percent": 3.2,
     "flue_gas_temp": 198.0,
+    "furnace_pressure_pa": -20.0,
+    "flue_gas_flow_kg_hr": 1600.0,
     "tube_health": 97.0,
     "efficiency": 87.0,
 }
@@ -95,6 +97,8 @@ def classify_plant_state(samples: list[dict[str, Any]]) -> tuple[dict[str, str],
     pressure = _num(latest, "steam_pressure", BASELINES["steam_pressure"])
     o2 = _num(latest, "o2_percent", BASELINES["o2_percent"])
     fgt = _num(latest, "flue_gas_temp", BASELINES["flue_gas_temp"])
+    furnace_pressure = _num(latest, "furnace_pressure_pa", BASELINES["furnace_pressure_pa"])
+    flue_flow = _num(latest, "flue_gas_flow_kg_hr", BASELINES["flue_gas_flow_kg_hr"])
     tube = _num(latest, "tube_health", BASELINES["tube_health"])
     eff = _num(latest, "efficiency", BASELINES["efficiency"])
     flame = int(_num(latest, "flame_status", 1))
@@ -115,6 +119,8 @@ def classify_plant_state(samples: list[dict[str, Any]]) -> tuple[dict[str, str],
         "steam_pressure": "CRITICAL_HIGH" if pressure >= 13.5 else "HIGH" if pressure > 13.0 else "NORMAL",
         "o2_percent": "LOW" if o2 < 2.0 else "HIGH" if o2 > 4.0 else "OPTIMAL",
         "flue_gas_temp": "CRITICAL_HIGH" if fgt > 240 else "HIGH" if fgt > 220 else "NORMAL",
+        "furnace_pressure": "HIGH" if furnace_pressure > -5 else "LOW" if furnace_pressure < -90 else "NORMAL",
+        "flue_gas_flow": _flow_state(flue_flow, BASELINES["flue_gas_flow_kg_hr"]),
         "tube_health": "INSPECTION_REQUIRED" if tube < 70 else "DEGRADED" if tube < 80 else "NORMAL",
         "efficiency": "CRITICAL_LOW" if eff < 75 else "LOW" if eff < 82 else "NORMAL",
         "flame_status": "OFF" if flame == 0 else "ON",
@@ -127,6 +133,7 @@ def classify_plant_state(samples: list[dict[str, Any]]) -> tuple[dict[str, str],
         "feedwater_flow": _trend(samples, "feedwater_flow", 25.0),
         "steam_flow": _trend(samples, "steam_flow", 25.0),
         "flue_gas_temp": _trend(samples, "flue_gas_temp", 0.4),
+        "furnace_pressure": _trend(samples, "furnace_pressure_pa", 0.8),
         "efficiency": _trend(samples, "efficiency", 0.05),
         "tube_health": _trend(samples, "tube_health", 0.03),
     }

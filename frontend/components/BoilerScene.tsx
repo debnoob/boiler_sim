@@ -455,9 +455,10 @@ export function BoilerScene({ controlOverride = null, actionSignal = null }: Boi
         flameCore.scale.setScalar(firingScale * (0.85 + Math.sin(t * 22) * 0.08));
         flameLight.intensity = lit ? (2.4 + Math.sin(t * 20) * 0.5) * firingScale : 0;
 
-        // flue_gas_temp → stack color
-        stackMat.color.copy(flueColor(tmp, tg.flue_gas_temp));
-        stackMat.emissive.copy(tmp).multiplyScalar(0.35);
+        // Stack temperature shows heat; inadequate furnace draft overrides to red.
+        const draftUnsafe = tg.furnace_pressure_pa != null && tg.furnace_pressure_pa > -5;
+        stackMat.color.copy(draftUnsafe ? C.red : flueColor(tmp, tg.flue_gas_temp));
+        stackMat.emissive.copy(draftUnsafe ? C.red : tmp).multiplyScalar(draftUnsafe ? 0.7 : 0.35);
 
         // o2_percent (live) blends toward the AI setpoint when autopilot on
         const o2shown = autopilot ? lerp(tg.o2_percent, o2sp, 0.6) : tg.o2_percent;

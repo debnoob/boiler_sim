@@ -73,6 +73,15 @@ export function LiveTags() {
   const fgtStatus = !t ? 'neutral' : t.flue_gas_temp > 240 ? 'crit' : t.flue_gas_temp > 220 ? 'warn' : 'ok';
   const effStatus = !t ? 'neutral' : t.efficiency < 75 ? 'crit' : t.efficiency < 82 ? 'warn' : 'ok';
   const tubeStatus = !t ? 'neutral' : t.tube_health < 70 ? 'crit' : t.tube_health < 80 ? 'warn' : 'ok';
+  const wallStatus = !t?.tube_wall_thickness ? 'neutral' : t.tube_wall_thickness < 5.5 ? 'crit' : t.tube_wall_thickness < 5.8 ? 'warn' : 'ok';
+  const corrStatus = t?.corrosion_rate == null ? 'neutral' : t.corrosion_rate > 0.5 ? 'crit' : t.corrosion_rate > 0.2 ? 'warn' : 'ok';
+  const phStatus = t?.feedwater_ph == null ? 'neutral' : t.feedwater_ph < 7.5 ? 'crit' : t.feedwater_ph < 8.2 ? 'warn' : 'ok';
+  const doStatus = t?.dissolved_oxygen == null ? 'neutral' : t.dissolved_oxygen > 100 ? 'crit' : t.dissolved_oxygen > 50 ? 'warn' : 'ok';
+  const leakStatus = t?.tube_leak_flow == null ? 'neutral' : t.tube_leak_flow > 500 ? 'crit' : t.tube_leak_flow > 50 ? 'warn' : 'ok';
+  const furnaceDraftStatus = t?.furnace_pressure_pa == null ? 'neutral' : t.furnace_pressure_pa > -5 ? 'crit' : t.furnace_pressure_pa > -10 || t.furnace_pressure_pa < -90 ? 'warn' : 'ok';
+  const damperStatus = t?.stack_damper_actual_pct == null ? 'neutral'
+    : t.stack_damper_command_pct != null && Math.abs(t.stack_damper_command_pct - t.stack_damper_actual_pct) > 20 ? 'crit'
+      : t.stack_damper_actual_pct < 20 ? 'warn' : 'ok';
 
   const afrStatus = !d ? 'neutral' : d.afr < 9.5 || d.afr > 13 ? 'crit' : d.afr < 10.5 || d.afr > 12 ? 'warn' : 'ok';
   const eaStatus  = !d ? 'neutral' : d.excessAir > 45 || d.excessAir < 5 ? 'crit' : d.excessAir > 30 ? 'warn' : 'ok';
@@ -123,6 +132,14 @@ export function LiveTags() {
         <TagRow label="Feedwater Temp" value={t ? `${t.feedwater_temp.toFixed(1)} °C` : '--'} />
         <TagRow label="FW/Steam Ratio" value={d ? d.fwToSteam.toFixed(3) : '--'} status={fwStatus} />
 
+        {/* ── WATER CHEMISTRY / INTEGRITY ─────────────────────────── */}
+        <SectionHead label="Water Chemistry & Tube Integrity" />
+        <TagRow label="Feedwater pH" value={t?.feedwater_ph != null ? t.feedwater_ph.toFixed(2) : '--'} status={phStatus} />
+        <TagRow label="Dissolved Oxygen" value={t?.dissolved_oxygen != null ? `${t.dissolved_oxygen.toFixed(0)} ppb` : '--'} status={doStatus} />
+        <TagRow label="Corrosion Rate" value={t?.corrosion_rate != null ? `${t.corrosion_rate.toFixed(3)} mm/y` : '--'} status={corrStatus} />
+        <TagRow label="Tube Wall" value={t?.tube_wall_thickness != null ? `${t.tube_wall_thickness.toFixed(3)} mm` : '--'} status={wallStatus} />
+        <TagRow label="Estimated Leak" value={t?.tube_leak_flow != null ? `${t.tube_leak_flow.toFixed(0)} kg/hr` : '--'} status={leakStatus} />
+
         {/* ── COMBUSTION ───────────────────────────────────────────── */}
         <SectionHead label="Combustion" />
         <TagRow label="Fuel Flow"      value={t ? `${t.fuel_flow.toFixed(1)} m³/hr` : '--'} />
@@ -130,6 +147,15 @@ export function LiveTags() {
         <TagRow label="O₂ %"          value={t ? `${t.o2_percent.toFixed(2)} %` : '--'} status={o2Status} />
         <TagRow label="Excess Air"     value={d ? `${d.excessAir.toFixed(1)} %` : '--'} status={eaStatus} />
         <TagRow label="Flue Gas Temp"  value={t ? `${t.flue_gas_temp.toFixed(1)} °C` : '--'} status={fgtStatus} />
+
+        {/* ── FLUE PATH / CHIMNEY ─────────────────────────────────── */}
+        <SectionHead label="Flue Path & Chimney" />
+        <TagRow label="Furnace Pressure" value={t?.furnace_pressure_pa != null ? `${t.furnace_pressure_pa.toFixed(1)} Pa` : '--'} status={furnaceDraftStatus} />
+        <TagRow label="Stack Draft" value={t?.stack_draft_pa != null ? `${t.stack_draft_pa.toFixed(1)} Pa` : '--'} />
+        <TagRow label="Flue Gas Flow" value={t?.flue_gas_flow_kg_hr != null ? `${Math.round(t.flue_gas_flow_kg_hr)} kg/hr` : '--'} />
+        <TagRow label="Stack Damper" value={t?.stack_damper_actual_pct != null ? `${t.stack_damper_actual_pct.toFixed(0)} % actual` : '--'} status={damperStatus} />
+        <TagRow label="Stack Exit Temp" value={t?.stack_exit_temp_c != null ? `${t.stack_exit_temp_c.toFixed(1)} °C` : '--'} />
+        <TagRow label="Chimney Skin Temp" value={t?.chimney_skin_temp_c != null ? `${t.chimney_skin_temp_c.toFixed(1)} °C` : '--'} status={t?.chimney_skin_temp_c != null && t.chimney_skin_temp_c > 85 ? 'crit' : t?.chimney_skin_temp_c != null && t.chimney_skin_temp_c > 70 ? 'warn' : 'ok'} />
 
         {/* ── KPIs ─────────────────────────────────────────────────── */}
         <SectionHead label="Performance KPIs" />

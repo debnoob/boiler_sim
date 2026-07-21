@@ -22,6 +22,7 @@ FORECAST_HORIZON   = 60   # Steps ahead to forecast (60 seconds)
 INFERENCE_INTERVAL = 15   # Run Moirai every N seconds (CPU-friendly)
 BREACH_THRESHOLD   = 70.0 # Tube health breach level (%)
 METRICS            = ["tube_health", "efficiency", "steam_pressure"]
+NUM_FORECAST_SAMPLES = 100
 
 
 # ============================================================
@@ -78,23 +79,118 @@ def load_moirai_model():
 # ============================================================
 # INFERENCE HELPERS
 # ============================================================
-def run_inference_uni2ts(model, history_values: np.ndarray) -> dict:
-    """Run Moirai inference via the uni2ts library."""
+def _forecast_paths_from_output(output, forecast_horizon: int):
+    """Normalize Uni2TS forecast output to ``[sample, horizon]`` paths.
+
+    Moirai releases expose two compatible but different forward APIs: some
+    return a torch distribution, while the Moirai2 wrapper returns its sampled
+    paths directly as a tensor, normally ``[batch, samples, horizon]``.
+    """
     import torch
-    import pandas as pd
+
+    if not torch.is_tensor(output):
+        raise TypeError(f"Unexpected Uni2TS output type: {type(output).__name__}")
+
+    shape = tuple(output.shape)
+    if output.ndim == 4:
+        # Distribution.sample: [samples, batch, horizon, target_dim]
+        if shape[1] == 1 and shape[2] == forecast_horizon and shape[3] == 1:
+            return output[:, 0, :, 0]
+        # Some wrapper versions: [batch, samples, horizon, target_dim]
+        if shape[0] == 1 and shape[2] == forecast_horizon and shape[3] == 1:
+            return output[0, :, :, 0]
+    elif output.ndim == 3:
+        # Moirai2Forecast direct output: [batch, samples, horizon]
+        if shape[0] == 1 and shape[2] == forecast_horizon:
+            return output[0]
+        # Deterministic output: [batch, horizon, target_dim]
+        if shape[0] == 1 and shape[1] == forecast_horizon and shape[2] == 1:
+            return output[0, :, 0].unsqueeze(0)
+        # Sample paths with an explicit target dimension: [samples, horizon, 1]
+        if shape[1] == forecast_horizon and shape[2] == 1:
+            return output[:, :, 0]
+    elif output.ndim == 2 and shape[1] == forecast_horizon:
+        # [samples, horizon] or a single [batch, horizon] point forecast.
+        return output
+
+    raise ValueError(
+        f"Unexpected Moirai output shape {shape}; expected sample paths with "
+        f"a {forecast_horizon}-step horizon"
+    )
+
+
+def _moirai2_quantile_bands(model, output, forecast_horizon: int) -> dict | None:
+    """Extract p10/p50/p90 from Moirai2Forecast's native quantile tensor."""
+    import torch
+
+    levels = getattr(getattr(model, "module", None), "quantile_levels", None)
+    if (
+        not torch.is_tensor(output)
+        or levels is None
+        or output.ndim != 4
+        or output.shape[0] != 1
+        or output.shape[1] != len(levels)
+        or output.shape[2] != forecast_horizon
+        or output.shape[3] != 1
+    ):
+        return None
+
+    level_values = np.asarray(levels, dtype=float)
+    quantiles = output[0, :, :, 0].detach().cpu().numpy()
+    return {
+        name: np.array([
+            np.interp(probability, level_values, quantiles[:, step])
+            for step in range(forecast_horizon)
+        ]).tolist()
+        for name, probability in (("p10", 0.1), ("p50", 0.5), ("p90", 0.9))
+    }
+
+
+def run_inference_uni2ts(model, history_values: np.ndarray) -> dict:
+    """Run Moirai 2 inference and return probabilistic forecast bands."""
+    import torch
 
     n = len(history_values)
-    past_target = torch.tensor(history_values, dtype=torch.float32).unsqueeze(0).unsqueeze(-1)
-    # Simple time features: integer positions
+    try:
+        device = next(model.parameters()).device
+    except (AttributeError, StopIteration):
+        device = torch.device("cpu")
+
+    # Moirai2Forecast calculates token indexes from its configured context
+    # length. It therefore needs a full context-shaped input even while this
+    # service is warming up. Left padding is explicitly marked unobserved.
+    configured_context = int(getattr(getattr(model, "hparams", None), "context_length", n))
+    values = np.asarray(history_values[-configured_context:], dtype=np.float32)
+    pad_length = max(0, configured_context - len(values))
+    if pad_length:
+        values = np.concatenate((np.zeros(pad_length, dtype=np.float32), values))
+
+    past_target = torch.as_tensor(values, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(-1)
     past_observed_target = torch.ones_like(past_target, dtype=torch.bool)
+    past_is_pad = torch.zeros((1, len(values)), dtype=torch.bool, device=device)
+    if pad_length:
+        past_observed_target[:, :pad_length, :] = False
+        past_is_pad[:, :pad_length] = True
 
     with torch.no_grad():
-        samples = model(
+        forecast_output = model(
             past_target=past_target,
             past_observed_target=past_observed_target,
+            past_is_pad=past_is_pad,
         )
-    # samples shape: [1, num_samples, horizon]
-    samples_np = samples.squeeze(0).cpu().numpy()  # [num_samples, horizon]
+
+        # Older Uni2TS variants return a distribution; Moirai2Forecast returns
+        # its generated paths directly as a tensor.
+        if hasattr(forecast_output, "sample"):
+            forecast_output = forecast_output.sample((NUM_FORECAST_SAMPLES,))
+        native_bands = _moirai2_quantile_bands(
+            model, forecast_output, FORECAST_HORIZON
+        )
+        if native_bands is not None:
+            return native_bands
+        paths = _forecast_paths_from_output(forecast_output, FORECAST_HORIZON)
+
+    samples_np = paths.detach().cpu().numpy()
     return {
         "p10": np.percentile(samples_np, 10, axis=0).tolist(),
         "p50": np.percentile(samples_np, 50, axis=0).tolist(),
@@ -203,6 +299,7 @@ class MoiraiForecaster:
         print(f"[Moirai Engine] 🔮 Running {self.backend} inference ...")
         forecast_results: dict = {}
         tube_p10 = None
+        used_simulation_fallback = self.backend != "uni2ts"
 
         for metric in METRICS:
             history_values = np.array(list(self.histories[metric]))
@@ -216,6 +313,7 @@ class MoiraiForecaster:
             except Exception as e:
                 print(f"[Moirai Engine] Inference error on {metric}: {e}")
                 quants = run_inference_simulation(history_values)
+                used_simulation_fallback = True
 
             forecast_results[metric] = {
                 "history": history_values[-20:].tolist(),  # last 20 points for charts
@@ -233,7 +331,9 @@ class MoiraiForecaster:
         out = {
             "timestamp": time.time(),
             "horizon_seconds": FORECAST_HORIZON,
-            "backend": self.backend,
+            # Do not label statistical fallback data as a Moirai/HF forecast.
+            "backend": "simulation" if used_simulation_fallback else self.backend,
+            "configured_backend": self.backend,
             "metrics": forecast_results,
             "projected_breach_eta": breach_eta,  # seconds from now, or null
         }
@@ -263,4 +363,3 @@ class MoiraiForecaster:
 if __name__ == "__main__":
     forecaster = MoiraiForecaster()
     forecaster.run()
-

@@ -40,13 +40,25 @@ NUMERIC_TAGS = [
     "drum_level",
     "feedwater_flow",
     "feedwater_temp",
+    "feedwater_ph",
+    "dissolved_oxygen",
     "fuel_flow",
     "air_flow",
     "o2_percent",
     "flue_gas_temp",
+    "furnace_pressure_pa",
+    "stack_draft_pa",
+    "flue_gas_flow_kg_hr",
+    "stack_damper_command_pct",
+    "stack_damper_actual_pct",
+    "stack_exit_temp_c",
+    "chimney_skin_temp_c",
     "flame_status",
     "safety_valve",
     "tube_health",
+    "tube_wall_thickness",
+    "corrosion_rate",
+    "tube_leak_flow",
     "efficiency",
     "heat_rate",
 ]
@@ -58,13 +70,25 @@ TAG_ALIASES = {
     "drum_level": ("drum level", "water level", "level"),
     "feedwater_flow": ("feedwater flow", "feed water flow"),
     "feedwater_temp": ("feedwater temperature", "feedwater temp"),
+    "feedwater_ph": ("feedwater ph", "water ph", "ph"),
+    "dissolved_oxygen": ("dissolved oxygen", "do ppb", "oxygen in feedwater"),
     "fuel_flow": ("fuel flow", "gas flow", "fuel"),
     "air_flow": ("air flow", "combustion air"),
     "o2_percent": ("o2", "oxygen", "oxygen percent", "o2 percent"),
     "flue_gas_temp": ("flue gas", "flue gas temperature", "stack temp", "stack temperature"),
+    "furnace_pressure_pa": ("furnace pressure", "furnace draft", "draft pressure"),
+    "stack_draft_pa": ("stack draft", "chimney draft"),
+    "flue_gas_flow_kg_hr": ("flue gas flow", "stack flow"),
+    "stack_damper_command_pct": ("stack damper command", "damper command"),
+    "stack_damper_actual_pct": ("stack damper", "damper position"),
+    "stack_exit_temp_c": ("stack exit temperature", "chimney exit temperature"),
+    "chimney_skin_temp_c": ("chimney skin temperature", "stack skin temperature"),
     "flame_status": ("flame", "flame status"),
     "safety_valve": ("safety valve", "relief valve"),
     "tube_health": ("tube health", "tube condition"),
+    "tube_wall_thickness": ("tube wall", "wall thickness", "tube thickness"),
+    "corrosion_rate": ("corrosion rate", "metal loss rate"),
+    "tube_leak_flow": ("tube leak", "leak flow", "boiler leak"),
     "efficiency": ("efficiency", "boiler efficiency"),
     "heat_rate": ("heat rate", "heatrate"),
 }
@@ -76,11 +100,23 @@ BASELINES = {
     "drum_level": 400.0,
     "feedwater_flow": 2300.0,
     "feedwater_temp": 95.0,
+    "feedwater_ph": 8.8,
+    "dissolved_oxygen": 10.0,
     "fuel_flow": 138.0,
     "air_flow": 1518.0,
     "o2_percent": 3.2,
     "flue_gas_temp": 198.0,
+    "furnace_pressure_pa": -20.0,
+    "stack_draft_pa": -100.0,
+    "flue_gas_flow_kg_hr": 1600.0,
+    "stack_damper_command_pct": 62.0,
+    "stack_damper_actual_pct": 62.0,
+    "stack_exit_temp_c": 198.0,
+    "chimney_skin_temp_c": 46.0,
     "tube_health": 97.0,
+    "tube_wall_thickness": 6.0,
+    "corrosion_rate": 0.02,
+    "tube_leak_flow": 0.0,
     "efficiency": 87.0,
 }
 
@@ -91,11 +127,23 @@ UNITS = {
     "drum_level": "mm",
     "feedwater_flow": "kg/hr",
     "feedwater_temp": "C",
+    "feedwater_ph": "pH",
+    "dissolved_oxygen": "ppb",
     "fuel_flow": "m3/hr",
     "air_flow": "kg/hr",
     "o2_percent": "%",
     "flue_gas_temp": "C",
+    "furnace_pressure_pa": "Pa",
+    "stack_draft_pa": "Pa",
+    "flue_gas_flow_kg_hr": "kg/hr",
+    "stack_damper_command_pct": "%",
+    "stack_damper_actual_pct": "%",
+    "stack_exit_temp_c": "C",
+    "chimney_skin_temp_c": "C",
     "tube_health": "%",
+    "tube_wall_thickness": "mm",
+    "corrosion_rate": "mm/year",
+    "tube_leak_flow": "kg/hr",
     "efficiency": "%",
     "heat_rate": "kJ/kg",
 }
@@ -304,6 +352,22 @@ def init_db(db_path: str | None = None) -> None:
                 ON historian_events(severity, ts);
             """
         )
+        # Add newly introduced telemetry fields to existing historian databases.
+        raw_columns = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_raw)")}
+        for tag in NUMERIC_TAGS:
+            if tag not in raw_columns:
+                conn.execute(f"ALTER TABLE telemetry_raw ADD COLUMN {tag} REAL")
+
+        rollup_columns_existing = {row[1] for row in conn.execute("PRAGMA table_info(telemetry_rollup)")}
+        for tag in NUMERIC_TAGS:
+            for suffix, declaration in (
+                ("sum", "REAL NOT NULL DEFAULT 0"),
+                ("min", "REAL"),
+                ("max", "REAL"),
+            ):
+                column = f"{tag}_{suffix}"
+                if column not in rollup_columns_existing:
+                    conn.execute(f"ALTER TABLE telemetry_rollup ADD COLUMN {column} {declaration}")
 
 
 def prune_old_data(db_path: str | None = None, retention_days: int = RETENTION_DAYS) -> None:

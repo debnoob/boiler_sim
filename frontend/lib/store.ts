@@ -102,6 +102,7 @@ export interface NexusStore {
   anomalySeries: ChartSeries;       // [anomaly_score]
   fuelFlowSeries: ChartSeries;      // [fuel_flow]
   kpiSeries: ChartSeries;           // [steam_pressure, drum_level, efficiency, tube_health]
+  integritySeries: ChartSeries;     // [wall_thickness, corrosion_rate, pH, dissolved_oxygen, leak_flow]
   kpiBaseline: KpiBaseline | null;  // first observed values, for session deltas
   riskSeries: ChartSeries;          // [failure_risk] — composite reliability risk over time
   oeeSeries: ChartSeries;           // [oee, availability, thermal performance, quality]
@@ -167,6 +168,13 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
     const divSeries = pushPoint(state.divergenceSeries, [tags.steam_temperature, tags.flue_gas_temp]);
     const fuelFlowSeries = pushPoint(state.fuelFlowSeries, [tags.fuel_flow]);
     const kpiSeries = pushPoint(state.kpiSeries, [tags.steam_pressure, tags.drum_level, tags.efficiency, tags.tube_health]);
+    const integritySeries = pushPoint(state.integritySeries, [
+      tags.tube_wall_thickness ?? 6,
+      tags.corrosion_rate ?? 0.02,
+      tags.feedwater_ph ?? 8.8,
+      tags.dissolved_oxygen ?? 10,
+      tags.tube_leak_flow ?? 0,
+    ]);
     const riskSeries = pushPoint(state.riskSeries, [calcRisk(tags, degradation)]);
     const kpiBaseline = state.kpiBaseline ?? {
       steam_pressure: tags.steam_pressure,
@@ -243,6 +251,7 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       divergenceSeries: divSeries,
       fuelFlowSeries,
       kpiSeries,
+      integritySeries,
       kpiBaseline,
       riskSeries,
       scatterData: newScatter,
@@ -299,6 +308,7 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
   anomalySeries: { labels: [], datasets: [[]] },
   fuelFlowSeries: { labels: [], datasets: [[]] },
   kpiSeries: { labels: [], datasets: [[], [], [], []] },
+  integritySeries: { labels: [], datasets: [[], [], [], [], []] },
   kpiBaseline: null,
   riskSeries: { labels: [], datasets: [[]] },
   oeeSeries: { labels: [], datasets: [[], [], [], []] },

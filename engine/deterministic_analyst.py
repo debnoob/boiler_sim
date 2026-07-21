@@ -40,7 +40,19 @@ BASELINES: dict[str, float] = {
     "air_flow":         1518.0,
     "o2_percent":       3.2,
     "flue_gas_temp":    198.0,
+    "furnace_pressure_pa": -20.0,
+    "stack_draft_pa":   -100.0,
+    "flue_gas_flow_kg_hr": 1600.0,
+    "stack_damper_command_pct": 62.0,
+    "stack_damper_actual_pct": 62.0,
+    "stack_exit_temp_c": 198.0,
+    "chimney_skin_temp_c": 46.0,
     "tube_health":      97.0,
+    "tube_wall_thickness": 6.0,
+    "corrosion_rate":   0.02,
+    "feedwater_ph":     8.8,
+    "dissolved_oxygen": 10.0,
+    "tube_leak_flow":   0.0,
     "efficiency":       87.0,
 }
 
@@ -57,7 +69,19 @@ NOISE_BAND: dict[str, float] = {
     "air_flow":          0.04,
     "o2_percent":        0.08,   # noisier transducer
     "flue_gas_temp":     0.03,
+    "furnace_pressure_pa": 0.10,
+    "stack_draft_pa":     0.10,
+    "flue_gas_flow_kg_hr": 0.08,
+    "stack_damper_command_pct": 0.08,
+    "stack_damper_actual_pct": 0.08,
+    "stack_exit_temp_c": 0.03,
+    "chimney_skin_temp_c": 0.08,
     "tube_health":       0.01,
+    "tube_wall_thickness": 0.003,
+    "corrosion_rate":    0.10,
+    "feedwater_ph":      0.01,
+    "dissolved_oxygen":  0.15,
+    "tube_leak_flow":    0.05,
     "efficiency":        0.02,
 }
 
@@ -66,8 +90,17 @@ THRESHOLDS: dict[str, tuple[Optional[float], Optional[float]]] = {
     "steam_pressure":    (None,  13.0),
     "drum_level":        (280.0, None),
     "flue_gas_temp":     (None,  240.0),
+    "furnace_pressure_pa": (None, -5.0),
+    "flue_gas_flow_kg_hr": (700.0, None),
+    "stack_damper_actual_pct": (15.0, None),
+    "chimney_skin_temp_c": (None, 85.0),
     "o2_percent":        (2.0,   5.5),
     "tube_health":       (70.0,  None),
+    "tube_wall_thickness": (5.5, None),
+    "corrosion_rate":    (None, 0.2),
+    "feedwater_ph":      (7.5, None),
+    "dissolved_oxygen":  (None, 50.0),
+    "tube_leak_flow":    (None, 50.0),
     "efficiency":        (60.0,  None),
 }
 
@@ -142,6 +175,9 @@ class PhysicsBrief:
 # CORRECTIVE ACTIONS  (deterministic, physics-grounded)
 # ============================================================
 HYPOTHESIS_LABELS: dict[str, str] = {
+    "flue_path_restriction":    "Flue Path Restriction / Inadequate Draft",
+    "stack_damper_fault":       "Stack Damper Fault / Command-Actual Mismatch",
+    "tube_corrosion":         "Active Tube Corrosion / Pressure-Boundary Loss",
     "tube_fouling":           "Tube Fouling / Heat-Transfer Degradation",
     "excess_air_combustion":  "Excess Air — Combustion Inefficiency",
     "incomplete_combustion":  "Incomplete Combustion / Rich Mixture",
@@ -158,6 +194,24 @@ HYPOTHESIS_LABELS: dict[str, str] = {
 }
 
 CORRECTIVE_ACTIONS: dict[str, list[str]] = {
+    "flue_path_restriction": [
+        "Hold firing rate and verify furnace draft before increasing load",
+        "Inspect the stack damper position and flue-path restriction indicators",
+        "Check duct and chimney path for obstruction; keep the boiler under close observation",
+        "Escalate to the site operating procedure if furnace pressure remains high",
+    ],
+    "stack_damper_fault": [
+        "Verify stack damper command against actual position feedback",
+        "Inspect the damper actuator and linkage for mechanical restriction",
+        "Hold or reduce firing while draft remains outside the control band",
+    ],
+    "tube_corrosion": [
+        "Reduce firing rate and place the boiler in a controlled low-load condition",
+        "Verify feedwater pH, dissolved oxygen, deaerator operation, and oxygen-scavenger dosing",
+        "Isolate and inspect the affected tube bank when wall thickness reaches the minimum limit",
+        "If leak flow is present or drum inventory cannot be maintained, initiate a controlled shutdown",
+        "Do not use soot blowing as a corrosion remedy; lost wall thickness is not recoverable",
+    ],
     "tube_fouling": [
         "Initiate soot-blowing sequence immediately to reduce surface deposits",
         "Reduce firing rate by 10–15% to limit thermal stress while fouling is active",
@@ -395,6 +449,15 @@ def classify_root_cause(
     fuel  = tags.get("fuel_flow", 138.0)
     fw    = tags.get("feedwater_flow", 2300.0)
     press = tags.get("steam_pressure", 10.0)
+    wall  = tags.get("tube_wall_thickness", 6.0)
+    corr  = tags.get("corrosion_rate", 0.02)
+    ph    = tags.get("feedwater_ph", 8.8)
+    do_ppb = tags.get("dissolved_oxygen", 10.0)
+    leak  = tags.get("tube_leak_flow", 0.0)
+    furnace_pressure = tags.get("furnace_pressure_pa", -20.0)
+    flue_flow = tags.get("flue_gas_flow_kg_hr", 1600.0)
+    damper_command = tags.get("stack_damper_command_pct", 62.0)
+    damper_actual = tags.get("stack_damper_actual_pct", 62.0)
 
     correlations: list[str] = []
 
@@ -405,43 +468,78 @@ def classify_root_cause(
             correlations.append(f"O₂ = {o2:.1f}% (atmospheric) confirms no combustion")
         return "flame_failure_esd", "HIGH", correlations
 
+    # ── Natural-draft flue path ──────────────────────────────────────────
+    inadequate_draft = furnace_pressure > -5.0 or rising("furnace_pressure_pa", 0.8)
+    low_flue_flow = flue_flow < BASELINES["flue_gas_flow_kg_hr"] * 0.72
+    damper_mismatch = damper_command > 45.0 and damper_actual < 20.0
+    if damper_mismatch and inadequate_draft:
+        correlations.append(
+            f"Stack damper commanded {damper_command:.0f}% but actual position is "
+            f"{damper_actual:.0f}% while furnace pressure is {furnace_pressure:.1f} Pa"
+        )
+        correlations.append("Damper command-actual mismatch explains the inadequate natural draft")
+        return "stack_damper_fault", "HIGH", correlations
+
+    if inadequate_draft and low_flue_flow:
+        correlations.append(
+            f"Furnace pressure {furnace_pressure:.1f} Pa is moving toward atmosphere while "
+            f"flue-gas flow is only {flue_flow:.0f} kg/hr"
+        )
+        if o2 < 2.5:
+            correlations.append(f"O₂ {o2:.2f}% is low, consistent with draft limiting combustion air")
+        return "flue_path_restriction", "HIGH" if furnace_pressure > -5.0 else "MEDIUM", correlations
+
+    # ── Tube corrosion / leak ─────────────────────────────────────────────
+    chemistry_bad = ph < 7.5 and do_ppb > 50.0
+    integrity_loss = wall < 5.85 or falling("tube_wall_thickness", -0.002)
+    active_attack = corr > 0.2
+    leak_active = leak > 50.0
+    if (chemistry_bad and active_attack) or (active_attack and integrity_loss) or leak_active:
+        correlations.append(
+            f"Feedwater pH {ph:.2f}, dissolved oxygen {do_ppb:.0f} ppb, and corrosion rate "
+            f"{corr:.3f} mm/year form an active chemistry-driven corrosion signature"
+        )
+        if integrity_loss:
+            correlations.append(
+                f"Tube wall {wall:.3f} mm is below the 6.000 mm nominal and still falling; "
+                "this is permanent pressure-boundary loss, not removable fouling"
+            )
+        if leak_active:
+            correlations.append(
+                f"Estimated tube leak {leak:.0f} kg/hr explains rising feedwater demand and drum inventory stress"
+            )
+        confidence = "HIGH" if leak_active or wall < 5.5 else "MEDIUM"
+        return "tube_corrosion", confidence, correlations
+
     # ── Tube fouling ───────────────────────────────────────────────────────
     # Three signal paths (ordered by certainty):
-    #   A) Full signature: FGT high + tube health low + efficiency low → HIGH
-    #   B) Two-sensor: FGT high + tube health low (efficiency may not have
-    #      propagated yet at early degradation stage) → MEDIUM
-    #   C) Trend-only: FGT rising AND tube health falling, even if still
-    #      within noise band — early warning → LOW
+    # Fouling is identified by stack-temperature/efficiency behavior. Tube health
+    # is reserved for structural integrity and is intentionally not part of this signature.
     fgt_hi     = above_baseline("flue_gas_temp", pct=6)
     fgt_mild   = above_baseline("flue_gas_temp", pct=3)   # early-stage
-    th_low     = below_baseline("tube_health", pct=3)
-    th_mild    = below_baseline("tube_health", pct=1.5)   # early-stage
     eff_low    = below_baseline("efficiency", pct=4)
     eff_mild   = below_baseline("efficiency", pct=2)
+    th_low     = below_baseline("tube_health", pct=3)
     fgt_rising = rising("flue_gas_temp", 0.05)
-    th_falling = falling("tube_health", -0.005)
 
-    # Path A — full confirmed signature
-    fouling_full = fgt_hi and th_low and (eff_low or eff_mild)
-    # Path B — two strong sensors (efficiency lag is normal early on)
-    fouling_partial = fgt_hi and th_low
-    # Path C — trend-based early warning
-    fouling_trend = fgt_mild and th_mild and fgt_rising and th_falling
+    fouling_full = fgt_hi and (eff_low or eff_mild)
+    fouling_partial = fgt_hi and fgt_rising
+    fouling_trend = fgt_mild and fgt_rising
 
     if fouling_full or fouling_partial or fouling_trend:
         correlations.append(
-            f"FGT {fgt:.1f}°C rising while tube health {th:.1f}% falls — "
-            "confirms heat-transfer degradation from tube fouling"
+            f"FGT {fgt:.1f}°C is elevated while efficiency is {eff:.1f}% — "
+            "the stack-loss signature confirms heat-transfer fouling"
         )
         if fuel > BASELINES["fuel_flow"] * 1.05:
             correlations.append(
                 f"Fuel flow {fuel:.1f} m³/hr (+{(fuel/BASELINES['fuel_flow']-1)*100:.0f}% "
                 "above baseline) while steam output unchanged — wasted energy confirms fouling"
             )
-        if fgt_rising and th_falling:
+        if fgt_rising:
             correlations.append(
-                "FGT trend accelerating upward AND tube health trend accelerating downward — "
-                "progressive fouling, not a transient"
+                "FGT trend is still rising while wall-integrity telemetry remains independent — "
+                "progressive deposit fouling, not corrosion"
             )
         if fouling_trend and not (fouling_full or fouling_partial):
             correlations.append(
@@ -449,7 +547,7 @@ def classify_root_cause(
                 "pre-emptive action recommended"
             )
         if fouling_full:
-            confidence = "HIGH" if (fgt > 220 or th < 85) else "MEDIUM"
+            confidence = "HIGH" if fgt > 220 else "MEDIUM"
         elif fouling_partial:
             confidence = "MEDIUM"
         else:
@@ -779,15 +877,16 @@ def build_efficiency_narrative(tags: dict, deviations: list[SensorDeviation]) ->
 
     fgt    = tags.get("flue_gas_temp", BASELINES["flue_gas_temp"])
     o2     = tags.get("o2_percent", BASELINES["o2_percent"])
-    th     = tags.get("tube_health", BASELINES["tube_health"])
     fuel   = tags.get("fuel_flow", BASELINES["fuel_flow"])
     steam  = tags.get("steam_flow", BASELINES["steam_flow"])
 
     # Compute individual loss contributions (mirrors calculate_efficiency in boiler_engine.py)
     stack_loss       = max(0, (fgt - 150) * 0.04)
     excess_air_loss  = max(0, (o2 - 3.0) * 0.8)
-    ua_factor        = th / 97.0  # approximate from tube health
-    fouling_loss     = (1.0 - ua_factor) * 15.0
+    # Estimate deposit loss from excess stack temperature. Tube health now means
+    # structural integrity and must not be used as a heat-transfer proxy.
+    estimated_ua_loss = max(0.0, min(0.6, (fgt - BASELINES["flue_gas_temp"]) / 85.0))
+    fouling_loss     = estimated_ua_loss * 15.0
     total_loss       = stack_loss + excess_air_loss + fouling_loss
     heat_rate        = (fuel * 35.5 * 1000) / max(steam, 1.0)  # kJ/kg approx
 
@@ -796,7 +895,7 @@ def build_efficiency_narrative(tags: dict, deviations: list[SensorDeviation]) ->
         f"Loss breakdown:",
         f"  Stack heat loss:   {stack_loss:.1f}%  (FGT={fgt:.1f}°C, baseline 198°C)",
         f"  Excess air loss:   {excess_air_loss:.1f}%  (O₂={o2:.2f}%, optimal ≤3.0%)",
-        f"  Tube fouling loss: {fouling_loss:.1f}%  (tube health={th:.1f}%)",
+        f"  Tube fouling loss: {fouling_loss:.1f}%  (estimated from stack-temperature rise)",
         f"  Total accounted:   {total_loss:.1f}%",
         f"Effective heat rate: {heat_rate:.0f} kJ/kg (lower is better, ~10 500 at baseline)",
     ]

@@ -72,6 +72,8 @@ const MODE_COLORS: Record<string, string> = {
   NORMAL: '#22c55e',
   DEGRADING: '#fbbf24',
   CRITICAL: '#f97316',
+  CORROSION: '#f97316',
+  FLUE_FAULT: '#ef4444',
   FAULT: '#ef4444',
 };
 

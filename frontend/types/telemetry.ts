@@ -5,11 +5,23 @@ export interface TelemetryTags {
   drum_level: number;
   feedwater_flow: number;
   feedwater_temp: number;
+  feedwater_ph?: number;
+  dissolved_oxygen?: number;
   fuel_flow: number;
   air_flow: number;
   o2_percent: number;
   flue_gas_temp: number;
+  furnace_pressure_pa?: number;
+  stack_draft_pa?: number;
+  flue_gas_flow_kg_hr?: number;
+  stack_damper_command_pct?: number;
+  stack_damper_actual_pct?: number;
+  stack_exit_temp_c?: number;
+  chimney_skin_temp_c?: number;
   tube_health: number;
+  tube_wall_thickness?: number;
+  corrosion_rate?: number;
+  tube_leak_flow?: number;
   efficiency: number;
   heat_rate: number;
   flame_status: number;
@@ -41,6 +53,7 @@ export interface ControlState {
   degradation_rate_factor: number;
   firing_reduction_pct: number;
   soot_blows: number;
+  furnace_draft_setpoint_pa?: number;
 }
 
 export interface HeartbeatPayload {
@@ -67,6 +80,7 @@ export interface ControlActionPayload {
 export interface AnomalyPayload {
   score: number;
   is_anomaly: boolean;
+  decision_score?: number;
   timestamp: number;
 }
 
@@ -239,7 +253,7 @@ export interface MoiraiForecastPayload {
 
 export type MqttConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 export type AiStatus = 'online' | 'analyzing';
-export type OperatingMode = 'NORMAL' | 'DEGRADING' | 'CRITICAL' | 'FAULT';
+export type OperatingMode = 'NORMAL' | 'DEGRADING' | 'CRITICAL' | 'CORROSION' | 'FLUE_FAULT' | 'FAULT' | 'IDEAL';
 
 export interface InterventionEvent {
   heartbeatCountAtDetection: number;
