@@ -9,10 +9,13 @@ import {
   Download,
   FileText,
   Flame,
+  Gauge,
   RadioTower,
   ShieldAlert,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
+  Wind,
   Wrench,
   Zap,
 } from 'lucide-react';
@@ -76,6 +79,7 @@ export default function ReportsPage() {
     msgCount,
     oeeSnapshot,
     oeeHistory,
+    fluePathSeries,
   } = useNexusStore();
 
   const risk = tags ? calcRisk(tags, degradationFactor) : 0;
@@ -106,6 +110,41 @@ export default function ReportsPage() {
       }))
     : [];
   const followUps = [...alertFollowUps, ...aiFollowUps].slice(0, 4);
+  const flueAlerts = alerts.filter((alert) => /flue|furnace|draft|damper|stack|chimney/i.test(`${alert.tag} ${alert.message}`));
+  const activeFlueAlerts = flueAlerts.filter((alert) => !acknowledgedAlertIds.includes(alert.id));
+  const pressureWindow = fluePathSeries.datasets[0] ?? [];
+  const worstFurnacePressure = pressureWindow.length ? Math.max(...pressureWindow) : null;
+  const damperMismatch = tags?.stack_damper_command_pct != null && tags?.stack_damper_actual_pct != null
+    ? Math.abs(tags.stack_damper_command_pct - tags.stack_damper_actual_pct)
+    : null;
+  const flueKpiItems: ReportKpi[] = [
+    {
+      label: 'Flue Alarms',
+      value: String(flueAlerts.length),
+      context: 'Recorded in this dashboard session',
+      tone: statusTone(flueAlerts.length, 1, 3),
+    },
+    {
+      label: 'Active Flue Alarms',
+      value: String(activeFlueAlerts.length),
+      context: activeFlueAlerts.length ? activeFlueAlerts[0].tag : 'No active flue-path alarm',
+      tone: statusTone(activeFlueAlerts.length, 1, 2),
+    },
+    {
+      label: 'Worst Furnace Pressure',
+      value: worstFurnacePressure == null ? '--' : `${worstFurnacePressure.toFixed(1)} Pa`,
+      context: 'Highest pressure in latest 60-second window',
+      tone: worstFurnacePressure == null ? undefined : worstFurnacePressure > -5 ? 'crit' : worstFurnacePressure > -10 || worstFurnacePressure < -90 ? 'warn' : 'ok',
+    },
+    {
+      label: 'Damper Mismatch',
+      value: damperMismatch == null ? '--' : `${damperMismatch.toFixed(1)} pts`,
+      context: tags?.stack_damper_command_pct == null || tags?.stack_damper_actual_pct == null
+        ? 'Command or actual position unavailable'
+        : `${tags.stack_damper_command_pct.toFixed(0)}% command / ${tags.stack_damper_actual_pct.toFixed(0)}% actual`,
+      tone: damperMismatch == null ? undefined : damperMismatch > 20 ? 'crit' : damperMismatch > 10 ? 'warn' : 'ok',
+    },
+  ];
 
   const eventRows = [
     ...alerts.slice(-5).map((alert) => ({
@@ -188,6 +227,7 @@ export default function ReportsPage() {
         : 'No AI shift report has been generated yet. Generate the end-of-shift report from AI Advisor for a complete handover.',
       meta: metaItems.map(({ label, value }) => ({ label, value })),
       kpis: kpiItems,
+      flueKpis: flueKpiItems,
       shiftSummary: shiftSummary
         ? shiftSummary.replace(/\s+/g, ' ').trim()
         : 'No AI shift summary is available yet. Generate the end-of-shift report from AI Advisor to populate the handover narrative.',
@@ -264,6 +304,31 @@ export default function ReportsPage() {
             <em>{k.context}</em>
           </div>
         ))}
+      </section>
+
+      <section className="reports-flue-summary" aria-label="Flue path report summary">
+        <div className="reports-section-head">
+          <div>
+            <h2>Flue Path Summary</h2>
+            <p>Alarm recurrence, latest draft excursion, and damper response evidence</p>
+          </div>
+          <span className="audit-pill">Natural draft</span>
+        </div>
+        <div className="reports-flue-kpi-grid">
+          {flueKpiItems.map((k) => (
+            <div className={`inner-card report-kpi-card${k.tone ? ` tone-${k.tone}` : ''}`} key={k.label}>
+              <span>
+                {k.label === 'Flue Alarms' ? <Wind size={13} />
+                  : k.label === 'Active Flue Alarms' ? <AlertTriangle size={13} />
+                    : k.label === 'Worst Furnace Pressure' ? <Gauge size={13} />
+                      : <SlidersHorizontal size={13} />}
+                {k.label}
+              </span>
+              <strong className={k.tone ? `report-tone-${k.tone}` : undefined}>{k.value}</strong>
+              <em>{k.context}</em>
+            </div>
+          ))}
+        </div>
       </section>
 
       <section className="reports-main-grid">

@@ -13,6 +13,7 @@ type TrendSnapshot = {
   kpiSeries: { datasets: number[][] };
   fuelFlowSeries: { datasets: number[][] };
   divergenceSeries: { datasets: number[][] };
+  fluePathSeries: { datasets: number[][] };
   tags: { o2_percent?: number } | null;
 };
 
@@ -85,13 +86,19 @@ function sensorTrend(sensor: DeviatedSensor, store: TrendSnapshot) {
 
 function getTrendForSensor(sensor: DeviatedSensor, store: TrendSnapshot) {
   const key = `${sensor.sensor} ${sensor.tag ?? ''}`.toLowerCase();
+  if (key.includes('furnace') || key.includes('stack') || key.includes('damper') || key.includes('draft')) {
+    if (key.includes('command')) return store.fluePathSeries.datasets[2] ?? [];
+    if (key.includes('actual') || key.includes('position') || key.includes('damper')) return store.fluePathSeries.datasets[3] ?? [];
+    return store.fluePathSeries.datasets[0] ?? [];
+  }
   if (key.includes('pressure')) return store.kpiSeries.datasets[0] ?? [];
   if (key.includes('drum')) return store.kpiSeries.datasets[1] ?? [];
   if (key.includes('efficiency')) return store.kpiSeries.datasets[2] ?? [];
   if (key.includes('tube') || key.includes('health')) return store.kpiSeries.datasets[3] ?? [];
-  if (key.includes('fuel') || key.includes('gas flow')) return store.fuelFlowSeries.datasets[0] ?? [];
+  if (key.includes('flue') && key.includes('temp')) return store.divergenceSeries.datasets[1] ?? [];
+  if (key.includes('flue') || key.includes('gas flow')) return store.fluePathSeries.datasets[1] ?? store.divergenceSeries.datasets[1] ?? [];
+  if (key.includes('fuel')) return store.fuelFlowSeries.datasets[0] ?? [];
   if (key.includes('o2')) return store.tags?.o2_percent != null ? Array(12).fill(store.tags.o2_percent) : [];
-  if (key.includes('flue') || key.includes('furnace') || key.includes('stack')) return store.divergenceSeries.datasets[1] ?? [];
   if (key.includes('steam temp')) return store.divergenceSeries.datasets[0] ?? [];
   return sensorTrend(sensor, store);
 }
@@ -174,8 +181,42 @@ export default function IncidentsPage() {
     kpiSeries: store.kpiSeries,
     fuelFlowSeries: store.fuelFlowSeries,
     divergenceSeries: store.divergenceSeries,
+    fluePathSeries: store.fluePathSeries,
     tags: store.tags,
   };
+  const flueIncidentText = [
+    mode,
+    primaryAlert?.tag,
+    primaryAlert?.message,
+    latestDiagnosis?.data.probable_cause,
+    ...(latestDiagnosis?.data.deviated_sensors ?? []).map((sensor) => `${sensor.sensor} ${sensor.tag ?? ''}`),
+  ].filter(Boolean).join(' ').toLowerCase();
+  const isFlueIncident = /flue|furnace|draft|damper|stack|chimney/.test(flueIncidentText);
+  const damperMismatch = tags?.stack_damper_command_pct != null && tags?.stack_damper_actual_pct != null
+    ? Math.abs(tags.stack_damper_command_pct - tags.stack_damper_actual_pct)
+    : null;
+  const flueEvidence = isFlueIncident && tags ? [
+    {
+      label: 'Furnace pressure',
+      value: `${tags.furnace_pressure_pa?.toFixed(1) ?? '--'} Pa`,
+      detail: `Control target ${(store.controlState?.furnace_draft_setpoint_pa ?? -20).toFixed(0)} Pa`,
+      trend: store.fluePathSeries.datasets[0] ?? [],
+    },
+    {
+      label: 'Flue gas flow',
+      value: tags.flue_gas_flow_kg_hr == null ? '--' : `${Math.round(tags.flue_gas_flow_kg_hr).toLocaleString()} kg/hr`,
+      detail: 'Compare against pressure response',
+      trend: store.fluePathSeries.datasets[1] ?? [],
+    },
+    {
+      label: 'Damper command / actual',
+      value: tags.stack_damper_command_pct == null || tags.stack_damper_actual_pct == null
+        ? '--'
+        : `${tags.stack_damper_command_pct.toFixed(0)}% / ${tags.stack_damper_actual_pct.toFixed(0)}%`,
+      detail: damperMismatch == null ? 'Position telemetry unavailable' : `${damperMismatch.toFixed(1)} point mismatch`,
+      trend: store.fluePathSeries.datasets[3] ?? [],
+    },
+  ] : [];
   const runWhatIf = () => {
     if (!latestDiagnosis) return;
 
@@ -349,6 +390,32 @@ export default function IncidentsPage() {
                       <div className="empty-incident">
                         <strong>No structured evidence attached</strong>
                         <span>The next anomaly payload should include deviated sensors and baseline deltas.</span>
+                      </div>
+                    )}
+                    {flueEvidence.length > 0 && (
+                      <div className="incident-flue-evidence">
+                        <div className="incident-subhead">
+                          <h3>Flue-path fault chain</h3>
+                          <p>Draft, flow, and damper response from the current live evidence window</p>
+                        </div>
+                        <div className="incident-evidence-grid">
+                          {flueEvidence.map((item) => (
+                            <div className="incident-evidence-tile" key={item.label}>
+                              <div className="incident-evidence-head">
+                                <div>
+                                  <span>{item.label}</span>
+                                  <strong>{item.value}</strong>
+                                </div>
+                                <em>Live</em>
+                              </div>
+                              <p>{item.detail}</p>
+                              <div className="incident-evidence-trend">
+                                <Sparkline data={item.trend.slice(-24)} color={severityMeta.color} height={34} />
+                              </div>
+                              <small>Last 60-second telemetry window</small>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>

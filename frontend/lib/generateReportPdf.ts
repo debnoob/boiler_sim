@@ -41,6 +41,7 @@ export interface ReportData {
   handoverNote: string;
   meta: Array<{ label: string; value: string }>;
   kpis: ReportKpi[];
+  flueKpis?: ReportKpi[];
   shiftSummary: string;
   latestIncident?: string;
   followUps: ReportFollowUp[];
@@ -172,6 +173,34 @@ export async function generateReportPdf(data: ReportData): Promise<void> {
     },
   });
   y = afterTable(doc) + 7;
+
+  if (data.flueKpis?.length) {
+    y = ensureSpace(doc, y, 28, M, pageH);
+    sectionHeading(doc, 'Flue Path Summary', M, y);
+    y += 3;
+    autoTable(doc, {
+      startY: y,
+      margin: { left: M, right: M },
+      head: [['Metric', 'Value', 'Context']],
+      body: data.flueKpis.map((k) => [k.label, k.value, k.context]),
+      theme: 'grid',
+      headStyles: { fillColor: NAVY, textColor: 255, fontSize: 9, halign: 'left', cellPadding: 2 },
+      bodyStyles: { fontSize: 9, textColor: INK, cellPadding: 2 },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      columnStyles: {
+        0: { cellWidth: 42, fontStyle: 'bold' },
+        1: { cellWidth: 32, fontStyle: 'bold' },
+        2: { textColor: MUTED },
+      },
+      didParseCell: (hook) => {
+        if (hook.section === 'body' && hook.column.index === 1) {
+          const tone = data.flueKpis?.[hook.row.index]?.tone;
+          if (tone) hook.cell.styles.textColor = TONE[tone];
+        }
+      },
+    });
+    y = afterTable(doc) + 7;
+  }
 
   // ── Section: AI Shift Summary ───────────────────────────────────────────
   y = ensureSpace(doc, y, 30, M, pageH);

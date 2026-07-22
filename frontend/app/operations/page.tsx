@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chart as ChartJS, registerables, type ScriptableContext } from 'chart.js';
-import { Doughnut, Bar } from 'react-chartjs-2';
+import { Doughnut, Bar, Line } from 'react-chartjs-2';
 import { useNexusStore } from '@/lib/store';
 import { usePublish } from '@/lib/publishContext';
 import { vizPalette, hexA, oeeColor as oeeColorFn, stateColor as stateColorFn } from '@/lib/vizPalette';
@@ -307,6 +307,8 @@ export default function OperationsPage() {
     statusTimeline,
     steamHourlySeries,
     chatMessages,
+    controlState,
+    fluePathSeries,
     isLight,
   } = useNexusStore();
   const publish = usePublish();
@@ -353,6 +355,27 @@ export default function OperationsPage() {
     : alerts.length;
   const anomalyEvents = selected?.anomaly_events ?? 0;
   const steamFuel = tags && tags.fuel_flow > 0 ? tags.steam_flow / tags.fuel_flow : 0;
+  const furnacePressure = tags?.furnace_pressure_pa ?? null;
+  const draftSetpoint = controlState?.furnace_draft_setpoint_pa ?? -20;
+  const damperCommand = tags?.stack_damper_command_pct ?? null;
+  const damperActual = tags?.stack_damper_actual_pct ?? null;
+  const damperMismatch = damperCommand != null && damperActual != null
+    ? Math.abs(damperCommand - damperActual)
+    : null;
+  const draftTone = furnacePressure == null
+    ? S.warn
+    : furnacePressure > -5
+      ? S.crit
+      : furnacePressure > -10 || furnacePressure < -90
+        ? S.warn
+        : S.good;
+  const draftState = furnacePressure == null
+    ? 'Telemetry pending'
+    : furnacePressure > -5
+      ? 'Inadequate draft'
+      : furnacePressure > -10 || furnacePressure < -90
+        ? 'Outside control band'
+        : 'Draft controlled';
   const timelineSegments = isCurrent ? statusTimeline : selected?.status_timeline ?? [];
 
   const latestDiag = [...chatMessages].reverse().find((m) => m.type === 'diagnosis');
@@ -436,6 +459,107 @@ export default function OperationsPage() {
         border: { display: false },
         grid: { color: gridColor, drawTicks: false },
         ticks: { color: tickColor, font: { size: 10 }, padding: 6 },
+      },
+    },
+  };
+
+  const draftTrendData = {
+    labels: fluePathSeries.labels,
+    datasets: [
+      {
+        label: 'Pressure PV',
+        data: fluePathSeries.datasets[0] ?? [],
+        borderColor: draftTone,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.32,
+      },
+      {
+        label: 'Setpoint',
+        data: fluePathSeries.labels.map(() => draftSetpoint),
+        borderColor: P.status.info,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        borderDash: [4, 3],
+        tension: 0,
+      },
+      {
+        label: 'High alarm',
+        data: fluePathSeries.labels.map(() => -5),
+        borderColor: S.crit,
+        borderWidth: 1,
+        pointRadius: 0,
+        borderDash: [2, 4],
+        tension: 0,
+      },
+    ],
+  };
+
+  const damperTrendData = {
+    labels: fluePathSeries.labels,
+    datasets: [
+      {
+        label: 'Command',
+        data: fluePathSeries.datasets[2] ?? [],
+        borderColor: P.status.info,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.28,
+        borderDash: [4, 3],
+      },
+      {
+        label: 'Actual',
+        data: fluePathSeries.datasets[3] ?? [],
+        borderColor: P.factor.thermal,
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.28,
+      },
+    ],
+  };
+
+  const trendLegend = {
+    position: 'top' as const,
+    align: 'end' as const,
+    labels: {
+      color: tickColor,
+      boxWidth: 8,
+      boxHeight: 8,
+      padding: 10,
+      font: { size: 9, weight: 700 as const },
+    },
+  };
+
+  const draftTrendOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 250 } as const,
+    interaction: { intersect: false, mode: 'index' as const },
+    plugins: { legend: trendLegend },
+    scales: {
+      x: { display: false, grid: { display: false } },
+      y: {
+        grid: { color: gridColor, drawTicks: false },
+        border: { display: false },
+        ticks: { color: tickColor, font: { size: 9 }, padding: 5, callback: (value: string | number) => `${value} Pa` },
+      },
+    },
+  };
+
+  const damperTrendOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 250 } as const,
+    interaction: { intersect: false, mode: 'index' as const },
+    plugins: { legend: trendLegend },
+    scales: {
+      x: { display: false, grid: { display: false } },
+      y: {
+        min: 0,
+        max: 100,
+        grid: { color: gridColor, drawTicks: false },
+        border: { display: false },
+        ticks: { color: tickColor, stepSize: 50, font: { size: 9 }, padding: 5, callback: (value: string | number) => `${value}%` },
       },
     },
   };
@@ -812,6 +936,59 @@ export default function OperationsPage() {
 
           {/* ══ Diagnostics ══ */}
           <div className="ops-eyebrow">Diagnostics</div>
+          <Panel
+            title="Draft & Flue Path"
+            subtitle="Natural draft control loop · live 60-second response"
+            right={<span className="audit-pill" style={{ color: draftTone, borderColor: hexA(draftTone, 0.4) }}>PID AUTO</span>}
+          >
+            <div className="flue-diagnostic-grid">
+              <div className="flue-draft-reading">
+                <span>Furnace pressure</span>
+                <strong className="digit" style={{ color: draftTone }}>
+                  {furnacePressure == null ? '--' : furnacePressure.toFixed(1)}<small> Pa</small>
+                </strong>
+                <em>{draftState} · SP {draftSetpoint.toFixed(0)} Pa</em>
+              </div>
+              <div className="flue-damper-state">
+                <div>
+                  <span>Damper command</span>
+                  <strong className="digit">{damperCommand == null ? '--' : `${damperCommand.toFixed(0)}%`}</strong>
+                </div>
+                <div>
+                  <span>Damper actual</span>
+                  <strong className="digit" style={{ color: damperMismatch != null && damperMismatch > 20 ? S.crit : 'var(--tx-primary)' }}>
+                    {damperActual == null ? '--' : `${damperActual.toFixed(0)}%`}
+                  </strong>
+                </div>
+                <div className="flue-mismatch-row">
+                  <span>Command / actual mismatch</span>
+                  <strong style={{ color: damperMismatch != null && damperMismatch > 20 ? S.crit : 'var(--tx-secondary)' }}>
+                    {damperMismatch == null ? '--' : `${damperMismatch.toFixed(1)} pts`}
+                  </strong>
+                </div>
+              </div>
+              <div className="flue-process-values">
+                <div><span>Flue gas flow</span><strong>{tags?.flue_gas_flow_kg_hr == null ? '--' : `${Math.round(tags.flue_gas_flow_kg_hr).toLocaleString()} kg/hr`}</strong></div>
+                <div><span>Stack draft</span><strong>{tags?.stack_draft_pa == null ? '--' : `${tags.stack_draft_pa.toFixed(1)} Pa`}</strong></div>
+                <div><span>Stack exit</span><strong>{tags?.stack_exit_temp_c == null ? '--' : `${tags.stack_exit_temp_c.toFixed(1)} C`}</strong></div>
+              </div>
+              <div className="flue-trend-stack">
+                {fluePathSeries.labels.length > 1 ? (
+                  <>
+                    <div className="flue-strip-chart">
+                      <div className="chart-card-title">Draft pressure</div>
+                      <div className="flue-strip-canvas"><Line data={draftTrendData} options={draftTrendOptions} /></div>
+                    </div>
+                    <div className="flue-strip-chart">
+                      <div className="chart-card-title">Damper tracking</div>
+                      <div className="flue-strip-canvas"><Line data={damperTrendData} options={damperTrendOptions} /></div>
+                    </div>
+                    <div className="flue-window-label"><span>60 seconds ago</span><span>Now</span></div>
+                  </>
+                ) : <div className="rail-empty">Collecting draft PID trace...</div>}
+              </div>
+            </div>
+          </Panel>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
             <Panel title="Target vs Actual Steam" subtitle="This shift">
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>

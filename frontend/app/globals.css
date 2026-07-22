@@ -1427,6 +1427,68 @@ body.light .tag-row:hover .tag-label { color: var(--accent-text) !important; }
 .ops-status.warn { border-left-color: #f59e0b; }
 .ops-status.bad { border-left-color: #ef4444; }
 
+/* Draft diagnostics is a process-control surface: it keeps the PID response,
+   actuator feedback, and process impact in one scan path. */
+.flue-diagnostic-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(190px, 1.1fr) minmax(150px, 0.9fr) minmax(260px, 1.7fr);
+  gap: 0;
+  border: 1px solid var(--bd-inner);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.flue-diagnostic-grid > div {
+  min-width: 0;
+  padding: 14px;
+  border-right: 1px solid var(--bd-inner);
+}
+
+.flue-diagnostic-grid > div:last-child { border-right: 0; }
+
+.flue-draft-reading span,
+.flue-damper-state span,
+.flue-process-values span,
+.flue-mismatch-row span {
+  display: block;
+  color: var(--tx-label);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.flue-draft-reading strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.flue-draft-reading small { font-size: 12px; font-weight: 700; }
+.flue-draft-reading em { display: block; margin-top: 9px; color: var(--tx-secondary); font-size: 10px; font-style: normal; line-height: 1.4; }
+
+.flue-damper-state { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; }
+.flue-damper-state strong { display: block; margin-top: 7px; color: var(--tx-primary); font-size: 22px; font-weight: 900; }
+.flue-mismatch-row { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-top: 10px; border-top: 1px solid var(--bd-inner); }
+.flue-mismatch-row strong { margin: 0; font-size: 12px; }
+
+.flue-process-values { display: grid; gap: 9px; align-content: start; }
+.flue-process-values div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--bd-inner); }
+.flue-process-values div:last-child { padding-bottom: 0; border-bottom: 0; }
+.flue-process-values strong { color: var(--tx-primary); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; text-align: right; }
+
+.flue-trend-stack { display: grid; gap: 8px; min-height: 256px; background: var(--bg-surface); }
+.flue-trend-stack .rail-empty { height: 100%; display: grid; place-items: center; }
+.flue-strip-chart { min-width: 0; }
+.flue-strip-chart .chart-card-title { margin-bottom: -4px; color: var(--tx-label); }
+.flue-strip-canvas { height: 104px; }
+.flue-window-label { display: flex; justify-content: space-between; color: var(--tx-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+
+.incident-flue-evidence { margin-top: 16px; padding-top: 15px; border-top: 1px solid var(--bd-inner); }
+
 .ops-tabs {
   display: flex;
   gap: 4px;
@@ -3917,6 +3979,12 @@ html, body { height: 100%; }
   gap: 10px;
 }
 
+.reports-flue-summary { display: grid; gap: 10px; }
+.reports-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.reports-section-head h2 { margin: 0; color: var(--tx-primary); font-size: 14px; font-weight: 900; }
+.reports-section-head p { margin: 3px 0 0; color: var(--tx-secondary); font-size: 11px; line-height: 1.3; }
+.reports-flue-kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+
 .report-kpi-card {
   position: relative;
   min-height: 94px;
@@ -4167,14 +4235,26 @@ html, body { height: 100%; }
   .reports-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .flue-diagnostic-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .flue-diagnostic-grid > div:nth-child(2) { border-right: 0; }
+  .flue-diagnostic-grid > div:nth-child(-n + 2) { border-bottom: 1px solid var(--bd-inner); }
+  .flue-trend-stack { grid-column: 1 / -1; }
+  .reports-flue-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
   .reports-context-grid,
   .reports-kpi-grid,
+  .reports-flue-kpi-grid,
   .reports-action-row {
     grid-template-columns: 1fr;
   }
+
+  .flue-diagnostic-grid { grid-template-columns: 1fr; }
+  .flue-diagnostic-grid > div { border-right: 0; border-bottom: 1px solid var(--bd-inner); }
+  .flue-diagnostic-grid > div:last-child { border-bottom: 0; }
+  .flue-trend-stack { grid-column: auto; }
 
   .reports-timeline-row {
     grid-template-columns: 12px minmax(0, 1fr) auto;

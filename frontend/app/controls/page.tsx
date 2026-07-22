@@ -84,6 +84,15 @@ export default function ControlsPage() {
           label="Steam Pressure SP" unit="bar" value={controlState?.pressure_setpoint ?? null}
           min={8} max={14} sp={controlState?.pressure_setpoint} decimals={1} warnFrac={0.75}
         />
+        <RadialGauge
+          label="Furnace Draft" unit="Pa" value={tags?.furnace_pressure_pa ?? null}
+          min={-100} max={20} sp={controlState?.furnace_draft_setpoint_pa ?? -20} decimals={1} warnFrac={0.96}
+        />
+        <ArcGauge
+          label="Stack Damper Actual" unit="%" value={tags?.stack_damper_actual_pct ?? null}
+          min={0} max={100} decimals={0} tone="accent"
+          nominalFrom={30} nominalTo={90} foot="Draft PID auto"
+        />
         <TrimBar label="Firing-Rate Trim" reductionPct={controlState?.firing_reduction_pct ?? null} span={40} />
         <SegRing label="Soot-Blow Sequence" count={controlState?.soot_blows ?? null} total={8} />
       </div>
@@ -123,6 +132,10 @@ export default function ControlsPage() {
             <div><span>Pressure SP</span><strong>{controlState ? `${controlState.pressure_setpoint.toFixed(1)} bar` : '--'}</strong></div>
             <div><span>Firing Trim</span><strong>{controlState ? `-${controlState.firing_reduction_pct}%` : '--'}</strong></div>
             <div><span>Soot Blows</span><strong>{controlState ? controlState.soot_blows : '--'}</strong></div>
+            <div><span>Draft PID</span><strong>AUTO</strong></div>
+            <div><span>Draft SP</span><strong>{controlState?.furnace_draft_setpoint_pa != null ? `${controlState.furnace_draft_setpoint_pa.toFixed(0)} Pa` : '--'}</strong></div>
+            <div><span>Damper Command</span><strong>{tags?.stack_damper_command_pct != null ? `${tags.stack_damper_command_pct.toFixed(0)}%` : '--'}</strong></div>
+            <div><span>Damper Actual</span><strong>{tags?.stack_damper_actual_pct != null ? `${tags.stack_damper_actual_pct.toFixed(0)}%` : '--'}</strong></div>
           </div>
           <button className="cc-override-btn" type="button">
             <GripHorizontal size={15} /> Request Manual Control

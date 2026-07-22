@@ -153,7 +153,8 @@ export function LiveTags() {
         <TagRow label="Furnace Pressure" value={t?.furnace_pressure_pa != null ? `${t.furnace_pressure_pa.toFixed(1)} Pa` : '--'} status={furnaceDraftStatus} />
         <TagRow label="Stack Draft" value={t?.stack_draft_pa != null ? `${t.stack_draft_pa.toFixed(1)} Pa` : '--'} />
         <TagRow label="Flue Gas Flow" value={t?.flue_gas_flow_kg_hr != null ? `${Math.round(t.flue_gas_flow_kg_hr)} kg/hr` : '--'} />
-        <TagRow label="Stack Damper" value={t?.stack_damper_actual_pct != null ? `${t.stack_damper_actual_pct.toFixed(0)} % actual` : '--'} status={damperStatus} />
+        <TagRow label="Stack Damper Command" value={t?.stack_damper_command_pct != null ? `${t.stack_damper_command_pct.toFixed(0)} %` : '--'} />
+        <TagRow label="Stack Damper Actual" value={t?.stack_damper_actual_pct != null ? `${t.stack_damper_actual_pct.toFixed(0)} %` : '--'} status={damperStatus} />
         <TagRow label="Stack Exit Temp" value={t?.stack_exit_temp_c != null ? `${t.stack_exit_temp_c.toFixed(1)} °C` : '--'} />
         <TagRow label="Chimney Skin Temp" value={t?.chimney_skin_temp_c != null ? `${t.chimney_skin_temp_c.toFixed(1)} °C` : '--'} status={t?.chimney_skin_temp_c != null && t.chimney_skin_temp_c > 85 ? 'crit' : t?.chimney_skin_temp_c != null && t.chimney_skin_temp_c > 70 ? 'warn' : 'ok'} />
 

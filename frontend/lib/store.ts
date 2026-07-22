@@ -103,6 +103,7 @@ export interface NexusStore {
   fuelFlowSeries: ChartSeries;      // [fuel_flow]
   kpiSeries: ChartSeries;           // [steam_pressure, drum_level, efficiency, tube_health]
   integritySeries: ChartSeries;     // [wall_thickness, corrosion_rate, pH, dissolved_oxygen, leak_flow]
+  fluePathSeries: ChartSeries;      // [furnace_pressure, flue_flow, damper_command, damper_actual]
   kpiBaseline: KpiBaseline | null;  // first observed values, for session deltas
   riskSeries: ChartSeries;          // [failure_risk] — composite reliability risk over time
   oeeSeries: ChartSeries;           // [oee, availability, thermal performance, quality]
@@ -174,6 +175,12 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       tags.feedwater_ph ?? 8.8,
       tags.dissolved_oxygen ?? 10,
       tags.tube_leak_flow ?? 0,
+    ]);
+    const fluePathSeries = pushPoint(state.fluePathSeries, [
+      tags.furnace_pressure_pa ?? 0,
+      tags.flue_gas_flow_kg_hr ?? 0,
+      tags.stack_damper_command_pct ?? 0,
+      tags.stack_damper_actual_pct ?? 0,
     ]);
     const riskSeries = pushPoint(state.riskSeries, [calcRisk(tags, degradation)]);
     const kpiBaseline = state.kpiBaseline ?? {
@@ -252,6 +259,7 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
       fuelFlowSeries,
       kpiSeries,
       integritySeries,
+      fluePathSeries,
       kpiBaseline,
       riskSeries,
       scatterData: newScatter,
@@ -309,6 +317,7 @@ export const useNexusStore = create<NexusStore>((set, get) => ({
   fuelFlowSeries: { labels: [], datasets: [[]] },
   kpiSeries: { labels: [], datasets: [[], [], [], []] },
   integritySeries: { labels: [], datasets: [[], [], [], [], []] },
+  fluePathSeries: { labels: [], datasets: [[], [], [], []] },
   kpiBaseline: null,
   riskSeries: { labels: [], datasets: [[]] },
   oeeSeries: { labels: [], datasets: [[], [], [], []] },
