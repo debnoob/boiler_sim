@@ -27,7 +27,7 @@ RUN mkdir -p /app/historian
 ENV MQTT_BROKER_HOST=localhost
 ENV HISTORIAN_DB_PATH=/app/historian/nexus_historian.db
 
-# Expose WebSockets port for dashboard
-EXPOSE 9001
+# Expose HTTP health check port for Render and WebSockets port for dashboard
+EXPOSE 10000 9001
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
